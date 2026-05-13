@@ -437,6 +437,95 @@ def normalize_columns(df):
     return df
 
 
+ALLOWED_STOCK_SITES = [
+    "WBKOL02",
+    "KABNG01",
+    "TSHYD01",
+    "HRAMB01",
+    "MHBHW02",
+    "PBTEP01",
+    "HRAMB02",
+    "HRAMB03",
+    "MHBHW01",
+    "KABNG02",
+]
+
+ALLOWED_STOCK_LOCATIONS = ["FGI", "ECOM"]
+
+
+def first_existing_column(df, options):
+    for option in options:
+        if option in df.columns:
+            return option
+    return None
+
+
+def standardize_stock_file(stock_df, show_messages=False):
+    stock_df = normalize_columns(stock_df)
+
+    old_format_cols = ["FSN", "RR Warehouse", "SAP Code", "Stock"]
+
+    if all(col in stock_df.columns for col in old_format_cols):
+        return stock_df
+
+    item_code_col = first_existing_column(stock_df, ["Item Code", "Item code", "ItemCode"])
+    available_qty_col = first_existing_column(stock_df, ["Available Qty", "Available Qty.", "AvailableQty"])
+    site_col = first_existing_column(stock_df, ["Site", "SITE"])
+    custom_location_col = first_existing_column(
+        stock_df,
+        ["Custom Location", "CustomLocation", "CUSTOM LOCATION", "CUSTOMLOCATION"]
+    )
+    fsn_col = first_existing_column(stock_df, ["FSN", "fsn"])
+
+    system_stock_cols = [
+        item_code_col,
+        available_qty_col,
+        site_col,
+        custom_location_col,
+        fsn_col,
+    ]
+
+    if not all(system_stock_cols):
+        return stock_df
+
+    original_rows = len(stock_df)
+
+    stock_df = stock_df.copy()
+    stock_df[item_code_col] = stock_df[item_code_col].apply(clean_text)
+    stock_df[site_col] = stock_df[site_col].apply(clean_text).str.upper()
+    stock_df[custom_location_col] = stock_df[custom_location_col].apply(clean_text).str.upper()
+    stock_df[fsn_col] = stock_df[fsn_col].apply(clean_text)
+    stock_df[available_qty_col] = stock_df[available_qty_col].apply(clean_number)
+
+    stock_df = stock_df[
+        stock_df[custom_location_col].isin(ALLOWED_STOCK_LOCATIONS) &
+        stock_df[site_col].isin(ALLOWED_STOCK_SITES) &
+        (stock_df[available_qty_col] > 0) &
+        (stock_df[fsn_col] != "")
+    ]
+
+    standardized_df = stock_df.rename(columns={
+        fsn_col: "FSN",
+        site_col: "RR Warehouse",
+        item_code_col: "SAP Code",
+        available_qty_col: "Stock",
+    })[["FSN", "RR Warehouse", "SAP Code", "Stock"]]
+
+    standardized_df = standardized_df.groupby(
+        ["FSN", "RR Warehouse", "SAP Code"],
+        as_index=False
+    )["Stock"].sum()
+
+    if show_messages:
+        st.info(
+            "System stock file detected. "
+            f"Filtered {original_rows:,} rows to {len(standardized_df):,} usable stock rows "
+            "using CustomLocation FGI/ECOM and allowed SITE list."
+        )
+
+    return standardized_df
+
+
 def get_tracker_df():
     return db_read("SELECT * FROM allocation_tracker ORDER BY id DESC")
 
@@ -819,7 +908,7 @@ def generate_sticker_pdf(billing_df, ean_image_map):
 
 def run_allocation(pending_df, stock_df):
     pending_df = normalize_columns(pending_df)
-    stock_df = normalize_columns(stock_df)
+    stock_df = standardize_stock_file(stock_df)
 
     required_pending = [
         "PO No.", "FSN", "Title", "RR Warehouse", "FK Warehouse", "Pending Qty."
@@ -1200,6 +1289,11 @@ elif menu == "Upload & Allocate":
             "Stock": [200]
         })
         st.dataframe(stock_sample, use_container_width=True)
+        st.caption(
+            "System stock files are also accepted. The app maps Item Code to SAP Code, "
+            "Available Qty to Stock, Site to RR Warehouse, and filters CustomLocation "
+            "to FGI/ECOM plus the approved SITE list."
+        )
 
     st.markdown("---")
     st.subheader("Upload Files")
@@ -1221,7 +1315,10 @@ elif menu == "Upload & Allocate":
         )
 
     if stock_file is not None:
-        st.session_state.stock_df = normalize_columns(pd.read_excel(stock_file))
+        st.session_state.stock_df = standardize_stock_file(
+            pd.read_excel(stock_file),
+            show_messages=True
+        )
 
     if pending_file is not None:
         st.session_state.pending_df = normalize_columns(pd.read_excel(pending_file))
