@@ -184,14 +184,37 @@ def get_engine():
 engine = get_engine()
 
 
-def db_read(query, params=None):
+def make_params_key(params):
+    if not params:
+        return tuple()
+
+    return tuple(sorted(params.items()))
+
+
+@st.cache_data(ttl=20, show_spinner=False)
+def db_read_cached(query, params_key):
+    params = dict(params_key)
+
+    with engine.connect() as connection:
+        return pd.read_sql(text(query), connection, params=params)
+
+
+def db_read(query, params=None, use_cache=True):
+    params_key = make_params_key(params)
+
+    if use_cache:
+        return db_read_cached(query, params_key).copy()
+
     with engine.connect() as connection:
         return pd.read_sql(text(query), connection, params=params or {})
 
 
-def db_execute(query, params=None):
+def db_execute(query, params=None, clear_cache=True):
     with engine.begin() as connection:
         connection.execute(text(query), params or {})
+
+    if clear_cache:
+        st.cache_data.clear()
 
 
 # =====================================================
@@ -239,7 +262,7 @@ def log_activity(action, details=""):
         "username": username,
         "action": action,
         "details": details
-    })
+    }, clear_cache=False)
 
 
 def create_first_admin_screen():
