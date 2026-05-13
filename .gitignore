@@ -1,0 +1,8 @@
+.streamlit/secrets.toml
+allocation_tracker.db
+allocation_tracker_backup.db
+app_local_sqlite_backup.py
+__pycache__/
+*.pyc
+venv/
+.DS_Store
