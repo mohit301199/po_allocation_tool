@@ -719,7 +719,7 @@ def generate_sticker_pdf(billing_df, ean_image_map):
 
         sticker_data = []
 
-        for i in range(10):
+        for i in range(8):
             if fsn in ean_image_map:
                 temp_file = tempfile.NamedTemporaryFile(
                     delete=False,
@@ -732,8 +732,8 @@ def generate_sticker_pdf(billing_df, ean_image_map):
 
                 barcode_img = Image(
                     temp_file.name,
-                    width=62 * mm,
-                    height=18 * mm
+                    width=68 * mm,
+                    height=22 * mm
                 )
 
             else:
@@ -752,11 +752,11 @@ def generate_sticker_pdf(billing_df, ean_image_map):
                 ],
                 colWidths=[82 * mm],
                 rowHeights=[
-                    8 * mm,
-                    20 * mm,
-                    6 * mm,
-                    6 * mm,
-                    6 * mm
+                    10 * mm,
+                    25 * mm,
+                    7 * mm,
+                    7 * mm,
+                    7 * mm
                 ]
             )
 
@@ -783,7 +783,7 @@ def generate_sticker_pdf(billing_df, ean_image_map):
         final_table = Table(
             rows,
             colWidths=[90 * mm, 90 * mm],
-            rowHeights=[52 * mm] * 5
+            rowHeights=[65 * mm] * 4
         )
 
         final_table.setStyle(TableStyle([
