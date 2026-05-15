@@ -534,12 +534,15 @@ def standardize_pending_file(pending_df, show_messages=False):
     if all(col in pending_df.columns for col in old_format_cols):
         if "Order ID" not in pending_df.columns:
             pending_df["Order ID"] = ""
+        if "Buyer Code" not in pending_df.columns:
+            pending_df["Buyer Code"] = ""
         if "Pending Amount" not in pending_df.columns:
             pending_df["Pending Amount"] = 0
         return pending_df
 
     po_col = first_existing_column(pending_df, ["PONo", "PO No.", "PO No", "PO Number", "PO"])
     order_id_col = first_existing_column(pending_df, ["Order Id", "Order ID", "OrderId"])
+    buyer_code_col = first_existing_column(pending_df, ["Buyer Code", "BuyerCode"])
     fsn_col = first_existing_column(pending_df, ["FSN", "fsn"])
     title_col = first_existing_column(pending_df, ["Item Description", "Title", "Product Title"])
     rr_col = first_existing_column(pending_df, ["Site Id", "Site ID", "SITE", "Site"])
@@ -551,6 +554,7 @@ def standardize_pending_file(pending_df, show_messages=False):
     system_pending_cols = [
         po_col,
         order_id_col,
+        buyer_code_col,
         fsn_col,
         title_col,
         rr_col,
@@ -571,7 +575,7 @@ def standardize_pending_file(pending_df, show_messages=False):
         pending_df[status_col].str.lower().isin(["hold", "pending"])
     ]
 
-    for col in [po_col, order_id_col, fsn_col, title_col, rr_col, fk_col]:
+    for col in [po_col, order_id_col, buyer_code_col, fsn_col, title_col, rr_col, fk_col]:
         pending_df[col] = pending_df[col].apply(clean_text)
 
     pending_df[rr_col] = pending_df[rr_col].str.upper()
@@ -588,6 +592,7 @@ def standardize_pending_file(pending_df, show_messages=False):
     standardized_df = pending_df.rename(columns={
         po_col: "PO No.",
         order_id_col: "Order ID",
+        buyer_code_col: "Buyer Code",
         fsn_col: "FSN",
         title_col: "Title",
         rr_col: "RR Warehouse",
@@ -598,6 +603,7 @@ def standardize_pending_file(pending_df, show_messages=False):
         [
             "PO No.",
             "Order ID",
+            "Buyer Code",
             "FSN",
             "Title",
             "RR Warehouse",
@@ -608,7 +614,7 @@ def standardize_pending_file(pending_df, show_messages=False):
     ]
 
     standardized_df = standardized_df.groupby(
-        ["PO No.", "Order ID", "FSN", "Title", "RR Warehouse", "FK Warehouse"],
+        ["PO No.", "Order ID", "Buyer Code", "FSN", "Title", "RR Warehouse", "FK Warehouse"],
         as_index=False
     ).agg({
         "Pending Qty.": "sum",
@@ -1044,7 +1050,7 @@ def run_allocation(pending_df, stock_df):
 
     result = []
 
-    for col in ["PO No.", "Order ID", "FSN", "Title", "RR Warehouse", "FK Warehouse"]:
+    for col in ["PO No.", "Order ID", "Buyer Code", "FSN", "Title", "RR Warehouse", "FK Warehouse"]:
         if col not in pending_df.columns:
             pending_df[col] = ""
         pending_df[col] = pending_df[col].apply(clean_text)
@@ -1114,6 +1120,7 @@ def run_allocation(pending_df, stock_df):
     for _, p in pending_df.iterrows():
         po = clean_text(p["PO No."])
         order_id = clean_text(p["Order ID"])
+        buyer_code = clean_text(p["Buyer Code"])
         fsn = clean_text(p["FSN"])
         title = clean_text(p["Title"])
         rr = clean_text(p["RR Warehouse"])
@@ -1130,6 +1137,7 @@ def run_allocation(pending_df, stock_df):
             result.append({
                 "PO No.": po,
                 "Order ID": order_id,
+                "Buyer Code": buyer_code,
                 "FSN": fsn,
                 "Title": title,
                 "RR Warehouse": rr,
@@ -1170,6 +1178,7 @@ def run_allocation(pending_df, stock_df):
                 result.append({
                     "PO No.": po,
                     "Order ID": order_id,
+                    "Buyer Code": buyer_code,
                     "FSN": fsn,
                     "Title": title,
                     "RR Warehouse": rr,
@@ -1192,6 +1201,7 @@ def run_allocation(pending_df, stock_df):
             result.append({
                 "PO No.": po,
                 "Order ID": order_id,
+                "Buyer Code": buyer_code,
                 "FSN": fsn,
                 "Title": title,
                 "RR Warehouse": rr,
@@ -1221,6 +1231,7 @@ def save_allocation(df):
     saved_count = 0
     tracker_columns = get_allocation_tracker_columns()
     has_order_id = "order_id" in tracker_columns
+    has_buyer_code = "buyer_code" in tracker_columns
     has_pending_amount = "pending_amount" in tracker_columns
 
     for _, r in df.iterrows():
@@ -1274,9 +1285,20 @@ def save_allocation(df):
             value_keys.insert(2, ":order_id")
             params["order_id"] = r.get("Order ID", "")
 
+        if has_buyer_code:
+            insert_at = 3 if has_order_id else 2
+            insert_columns.insert(insert_at, "buyer_code")
+            value_keys.insert(insert_at, ":buyer_code")
+            params["buyer_code"] = r.get("Buyer Code", "")
+
         if has_pending_amount:
-            insert_columns.insert(9 if has_order_id else 8, "pending_amount")
-            value_keys.insert(9 if has_order_id else 8, ":pending_amount")
+            insert_at = 9
+            if has_order_id:
+                insert_at += 1
+            if has_buyer_code:
+                insert_at += 1
+            insert_columns.insert(insert_at, "pending_amount")
+            value_keys.insert(insert_at, ":pending_amount")
             params["pending_amount"] = clean_number(r.get("Pending Amount", 0))
 
         db_execute(f"""
@@ -1422,6 +1444,7 @@ elif menu == "Upload & Allocate":
         pending_sample = pd.DataFrame({
             "PO No.": ["PO123"],
             "Order ID": ["SO-123"],
+            "Buyer Code": ["CUS001"],
             "FSN": ["FSN001"],
             "Title": ["Fan"],
             "RR Warehouse": ["WH1"],
@@ -1432,7 +1455,7 @@ elif menu == "Upload & Allocate":
         st.dataframe(pending_sample, use_container_width=True)
         st.caption(
             "System pending files are also accepted. The app maps PONo, Order Id, "
-            "Item Description, Site Id, FK FC, Pending Qty and Pending Amt. "
+            "Buyer Code, Item Description, Site Id, FK FC, Pending Qty and Pending Amt. "
             "Both Hold and Pending status rows are included."
         )
 
@@ -1588,6 +1611,7 @@ elif menu == "Allocation Tracker":
             "allocation_date",
             "po_no",
             "order_id",
+            "buyer_code",
             "fsn",
             "title",
             "rr_warehouse",
@@ -1714,6 +1738,7 @@ elif menu == "Allocation Tracker":
                 "allocation_date": st.column_config.TextColumn("Allocation Date", disabled=True),
                 "po_no": st.column_config.TextColumn("PO No.", disabled=True),
                 "order_id": st.column_config.TextColumn("Order ID", disabled=True),
+                "buyer_code": st.column_config.TextColumn("Buyer Code", disabled=True),
                 "fsn": st.column_config.TextColumn("FSN", disabled=True),
                 "title": st.column_config.TextColumn("Title", disabled=True),
                 "rr_warehouse": st.column_config.TextColumn("RR Warehouse", disabled=True),
