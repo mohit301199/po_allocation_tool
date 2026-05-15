@@ -526,6 +526,117 @@ def standardize_stock_file(stock_df, show_messages=False):
     return standardized_df
 
 
+def standardize_pending_file(pending_df, show_messages=False):
+    pending_df = normalize_columns(pending_df)
+
+    old_format_cols = ["PO No.", "FSN", "Title", "RR Warehouse", "FK Warehouse", "Pending Qty."]
+
+    if all(col in pending_df.columns for col in old_format_cols):
+        if "Order ID" not in pending_df.columns:
+            pending_df["Order ID"] = ""
+        if "Pending Amount" not in pending_df.columns:
+            pending_df["Pending Amount"] = 0
+        return pending_df
+
+    po_col = first_existing_column(pending_df, ["PONo", "PO No.", "PO No", "PO Number", "PO"])
+    order_id_col = first_existing_column(pending_df, ["Order Id", "Order ID", "OrderId"])
+    fsn_col = first_existing_column(pending_df, ["FSN", "fsn"])
+    title_col = first_existing_column(pending_df, ["Item Description", "Title", "Product Title"])
+    rr_col = first_existing_column(pending_df, ["Site Id", "Site ID", "SITE", "Site"])
+    fk_col = first_existing_column(pending_df, ["FK FC", "FK Warehouse", "FK WH"])
+    pending_qty_col = first_existing_column(pending_df, ["Pending Qty", "Pending Qty.", "Pending Quantity"])
+    pending_amount_col = first_existing_column(pending_df, ["Pending Amt", "Pending Amount", "Pending Amt."])
+    status_col = first_existing_column(pending_df, ["Status", "Order Status"])
+
+    system_pending_cols = [
+        po_col,
+        order_id_col,
+        fsn_col,
+        title_col,
+        rr_col,
+        fk_col,
+        pending_qty_col,
+        pending_amount_col,
+        status_col,
+    ]
+
+    if not all(system_pending_cols):
+        return pending_df
+
+    original_rows = len(pending_df)
+
+    pending_df = pending_df.copy()
+    pending_df[status_col] = pending_df[status_col].apply(clean_text)
+    pending_df = pending_df[
+        pending_df[status_col].str.lower().isin(["hold", "pending"])
+    ]
+
+    for col in [po_col, order_id_col, fsn_col, title_col, rr_col, fk_col]:
+        pending_df[col] = pending_df[col].apply(clean_text)
+
+    pending_df[rr_col] = pending_df[rr_col].str.upper()
+    pending_df[pending_qty_col] = pending_df[pending_qty_col].apply(clean_number)
+    pending_df[pending_amount_col] = pending_df[pending_amount_col].apply(clean_number)
+
+    blank_fsn_rows = len(pending_df[pending_df[fsn_col] == ""])
+
+    pending_df = pending_df[
+        (pending_df[fsn_col] != "") &
+        (pending_df[pending_qty_col] > 0)
+    ]
+
+    standardized_df = pending_df.rename(columns={
+        po_col: "PO No.",
+        order_id_col: "Order ID",
+        fsn_col: "FSN",
+        title_col: "Title",
+        rr_col: "RR Warehouse",
+        fk_col: "FK Warehouse",
+        pending_qty_col: "Pending Qty.",
+        pending_amount_col: "Pending Amount",
+    })[
+        [
+            "PO No.",
+            "Order ID",
+            "FSN",
+            "Title",
+            "RR Warehouse",
+            "FK Warehouse",
+            "Pending Qty.",
+            "Pending Amount",
+        ]
+    ]
+
+    standardized_df = standardized_df.groupby(
+        ["PO No.", "Order ID", "FSN", "Title", "RR Warehouse", "FK Warehouse"],
+        as_index=False
+    ).agg({
+        "Pending Qty.": "sum",
+        "Pending Amount": "sum",
+    })
+
+    if show_messages:
+        st.info(
+            "System pending file detected. "
+            f"Included Hold/Pending rows and converted {original_rows:,} source rows "
+            f"to {len(standardized_df):,} usable pending rows. "
+            f"Skipped {blank_fsn_rows:,} rows with blank FSN."
+        )
+
+    return standardized_df
+
+
+def get_allocation_tracker_columns():
+    columns_df = db_read("""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+        AND table_name = 'allocation_tracker'
+    """)
+
+    return set(columns_df["column_name"].tolist())
+
+
 def get_tracker_df():
     return db_read("SELECT * FROM allocation_tracker ORDER BY id DESC")
 
@@ -907,7 +1018,7 @@ def generate_sticker_pdf(billing_df, ean_image_map):
 # =====================================================
 
 def run_allocation(pending_df, stock_df):
-    pending_df = normalize_columns(pending_df)
+    pending_df = standardize_pending_file(pending_df)
     stock_df = standardize_stock_file(stock_df)
 
     required_pending = [
@@ -933,10 +1044,17 @@ def run_allocation(pending_df, stock_df):
 
     result = []
 
-    for col in ["PO No.", "FSN", "Title", "RR Warehouse", "FK Warehouse"]:
+    for col in ["PO No.", "Order ID", "FSN", "Title", "RR Warehouse", "FK Warehouse"]:
+        if col not in pending_df.columns:
+            pending_df[col] = ""
         pending_df[col] = pending_df[col].apply(clean_text)
 
     pending_df["Pending Qty."] = pending_df["Pending Qty."].apply(clean_number)
+
+    if "Pending Amount" not in pending_df.columns:
+        pending_df["Pending Amount"] = 0
+
+    pending_df["Pending Amount"] = pending_df["Pending Amount"].apply(clean_number)
 
     existing_po_alloc = get_existing_po_allocation_qty()
 
@@ -995,11 +1113,13 @@ def run_allocation(pending_df, stock_df):
 
     for _, p in pending_df.iterrows():
         po = clean_text(p["PO No."])
+        order_id = clean_text(p["Order ID"])
         fsn = clean_text(p["FSN"])
         title = clean_text(p["Title"])
         rr = clean_text(p["RR Warehouse"])
         fk = clean_text(p["FK Warehouse"])
         uploaded_pending_qty = clean_number(p["Pending Qty."])
+        pending_amount = clean_number(p["Pending Amount"])
         already_allocated_qty = clean_number(p["already_allocated_qty"])
         pending_qty = clean_number(p["Allocatable Pending Qty."])
 
@@ -1009,12 +1129,14 @@ def run_allocation(pending_df, stock_df):
         if pending_qty <= 0:
             result.append({
                 "PO No.": po,
+                "Order ID": order_id,
                 "FSN": fsn,
                 "Title": title,
                 "RR Warehouse": rr,
                 "FK Warehouse": fk,
                 "SAP Code": "",
                 "Pending Qty.": uploaded_pending_qty,
+                "Pending Amount": pending_amount,
                 "Already Allocated Qty.": already_allocated_qty,
                 "Allocatable Pending Qty.": pending_qty,
                 "Allocated Qty.": 0,
@@ -1047,12 +1169,14 @@ def run_allocation(pending_df, stock_df):
 
                 result.append({
                     "PO No.": po,
+                    "Order ID": order_id,
                     "FSN": fsn,
                     "Title": title,
                     "RR Warehouse": rr,
                     "FK Warehouse": fk,
                     "SAP Code": s["SAP Code"],
                     "Pending Qty.": uploaded_pending_qty,
+                    "Pending Amount": pending_amount,
                     "Already Allocated Qty.": already_allocated_qty,
                     "Allocatable Pending Qty.": pending_qty,
                     "Allocated Qty.": alloc,
@@ -1067,12 +1191,14 @@ def run_allocation(pending_df, stock_df):
         if not allocated_anything:
             result.append({
                 "PO No.": po,
+                "Order ID": order_id,
                 "FSN": fsn,
                 "Title": title,
                 "RR Warehouse": rr,
                 "FK Warehouse": fk,
                 "SAP Code": "",
                 "Pending Qty.": uploaded_pending_qty,
+                "Pending Amount": pending_amount,
                 "Already Allocated Qty.": already_allocated_qty,
                 "Allocatable Pending Qty.": pending_qty,
                 "Allocated Qty.": 0,
@@ -1093,39 +1219,43 @@ def run_allocation(pending_df, stock_df):
 
 def save_allocation(df):
     saved_count = 0
+    tracker_columns = get_allocation_tracker_columns()
+    has_order_id = "order_id" in tracker_columns
+    has_pending_amount = "pending_amount" in tracker_columns
 
     for _, r in df.iterrows():
         if clean_number(r["Allocated Qty."]) <= 0:
             continue
 
-        db_execute("""
-        INSERT INTO allocation_tracker (
-            allocation_date,
-            po_no,
-            fsn,
-            title,
-            rr_warehouse,
-            fk_warehouse,
-            sap_code,
-            allocated_qty,
-            sent_for_billing,
-            billing_done,
-            remark
-        )
-        VALUES (
-            :allocation_date,
-            :po_no,
-            :fsn,
-            :title,
-            :rr_warehouse,
-            :fk_warehouse,
-            :sap_code,
-            :allocated_qty,
-            :sent_for_billing,
-            :billing_done,
-            :remark
-        )
-        """, {
+        insert_columns = [
+            "allocation_date",
+            "po_no",
+            "fsn",
+            "title",
+            "rr_warehouse",
+            "fk_warehouse",
+            "sap_code",
+            "allocated_qty",
+            "sent_for_billing",
+            "billing_done",
+            "remark"
+        ]
+
+        value_keys = [
+            ":allocation_date",
+            ":po_no",
+            ":fsn",
+            ":title",
+            ":rr_warehouse",
+            ":fk_warehouse",
+            ":sap_code",
+            ":allocated_qty",
+            ":sent_for_billing",
+            ":billing_done",
+            ":remark"
+        ]
+
+        params = {
             "allocation_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "po_no": r["PO No."],
             "fsn": r["FSN"],
@@ -1137,7 +1267,26 @@ def save_allocation(df):
             "sent_for_billing": "No",
             "billing_done": "No",
             "remark": "Fresh Allocation"
-        })
+        }
+
+        if has_order_id:
+            insert_columns.insert(2, "order_id")
+            value_keys.insert(2, ":order_id")
+            params["order_id"] = r.get("Order ID", "")
+
+        if has_pending_amount:
+            insert_columns.insert(9 if has_order_id else 8, "pending_amount")
+            value_keys.insert(9 if has_order_id else 8, ":pending_amount")
+            params["pending_amount"] = clean_number(r.get("Pending Amount", 0))
+
+        db_execute(f"""
+        INSERT INTO allocation_tracker (
+            {", ".join(insert_columns)}
+        )
+        VALUES (
+            {", ".join(value_keys)}
+        )
+        """, params)
 
         saved_count += 1
 
@@ -1272,13 +1421,20 @@ elif menu == "Upload & Allocate":
         st.markdown("#### Pending Qty File Format")
         pending_sample = pd.DataFrame({
             "PO No.": ["PO123"],
+            "Order ID": ["SO-123"],
             "FSN": ["FSN001"],
             "Title": ["Fan"],
             "RR Warehouse": ["WH1"],
             "FK Warehouse": ["FK1"],
-            "Pending Qty.": [100]
+            "Pending Qty.": [100],
+            "Pending Amount": [25000]
         })
         st.dataframe(pending_sample, use_container_width=True)
+        st.caption(
+            "System pending files are also accepted. The app maps PONo, Order Id, "
+            "Item Description, Site Id, FK FC, Pending Qty and Pending Amt. "
+            "Both Hold and Pending status rows are included."
+        )
 
     with sample2:
         st.markdown("#### Stock File Format")
@@ -1321,7 +1477,10 @@ elif menu == "Upload & Allocate":
         )
 
     if pending_file is not None:
-        st.session_state.pending_df = normalize_columns(pd.read_excel(pending_file))
+        st.session_state.pending_df = standardize_pending_file(
+            pd.read_excel(pending_file),
+            show_messages=True
+        )
 
     if st.session_state.stock_df is not None and st.session_state.pending_df is not None:
         st.markdown("""
@@ -1423,6 +1582,32 @@ elif menu == "Allocation Tracker":
             columns=["sent_for_billing", "billing_done"],
             errors="ignore"
         )
+
+        tracker_display_columns = [
+            "id",
+            "allocation_date",
+            "po_no",
+            "order_id",
+            "fsn",
+            "title",
+            "rr_warehouse",
+            "fk_warehouse",
+            "sap_code",
+            "pending_amount",
+            "allocated_qty",
+            "sent_date",
+            "billing_date",
+            "invoice_no",
+            "remark",
+            "sent_for_billing_tick",
+            "billing_done_tick",
+        ]
+
+        tracker_display_columns = [
+            col for col in tracker_display_columns if col in editable_tracker.columns
+        ]
+
+        editable_tracker = editable_tracker[tracker_display_columns]
 
         st.markdown("---")
         st.subheader("Bulk Update")
@@ -1528,11 +1713,13 @@ elif menu == "Allocation Tracker":
                 "id": st.column_config.NumberColumn("ID", disabled=True),
                 "allocation_date": st.column_config.TextColumn("Allocation Date", disabled=True),
                 "po_no": st.column_config.TextColumn("PO No.", disabled=True),
+                "order_id": st.column_config.TextColumn("Order ID", disabled=True),
                 "fsn": st.column_config.TextColumn("FSN", disabled=True),
                 "title": st.column_config.TextColumn("Title", disabled=True),
                 "rr_warehouse": st.column_config.TextColumn("RR Warehouse", disabled=True),
                 "fk_warehouse": st.column_config.TextColumn("FK Warehouse", disabled=True),
                 "sap_code": st.column_config.TextColumn("SAP Code", disabled=True),
+                "pending_amount": st.column_config.NumberColumn("Pending Amount", disabled=True),
                 "allocated_qty": st.column_config.NumberColumn("Allocated Qty.", disabled=True),
                 "sent_date": st.column_config.DateColumn("Sent Date", format="DD-MM-YYYY"),
                 "billing_date": st.column_config.DateColumn("Billing Date", format="DD-MM-YYYY"),
