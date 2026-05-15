@@ -648,17 +648,33 @@ def get_tracker_df():
 
 
 def get_open_allocation_qty():
-    query = """
-    SELECT
-        fsn,
-        rr_warehouse,
-        sap_code,
-        SUM(allocated_qty) AS open_alloc_qty
-    FROM allocation_tracker
-    WHERE sent_for_billing='Yes'
-    AND (billing_done IS NULL OR billing_done!='Yes')
-    GROUP BY fsn, rr_warehouse, sap_code
-    """
+    tracker_columns = get_allocation_tracker_columns()
+
+    if "billed_qty" in tracker_columns:
+        query = """
+        SELECT
+            fsn,
+            rr_warehouse,
+            sap_code,
+            SUM(GREATEST(allocated_qty - COALESCE(billed_qty, 0), 0)) AS open_alloc_qty
+        FROM allocation_tracker
+        WHERE sent_for_billing='Yes'
+        AND GREATEST(allocated_qty - COALESCE(billed_qty, 0), 0) > 0
+        GROUP BY fsn, rr_warehouse, sap_code
+        """
+
+    else:
+        query = """
+        SELECT
+            fsn,
+            rr_warehouse,
+            sap_code,
+            SUM(allocated_qty) AS open_alloc_qty
+        FROM allocation_tracker
+        WHERE sent_for_billing='Yes'
+        AND (billing_done IS NULL OR billing_done!='Yes')
+        GROUP BY fsn, rr_warehouse, sap_code
+        """
 
     return db_read(query)
 
@@ -683,7 +699,10 @@ def get_existing_po_allocation_qty():
 # =========================
 
 def get_billing_summary():
-    query = """
+    tracker_columns = get_allocation_tracker_columns()
+    qty_expr = "COALESCE(billed_qty, allocated_qty)" if "billed_qty" in tracker_columns else "allocated_qty"
+
+    query = f"""
     SELECT
         invoice_no,
         po_no,
@@ -692,7 +711,7 @@ def get_billing_summary():
         rr_warehouse,
         fk_warehouse,
         sap_code,
-        allocated_qty
+        {qty_expr} AS allocated_qty
     FROM allocation_tracker
     WHERE sent_for_billing = 'Yes'
     AND invoice_no IS NOT NULL
@@ -738,6 +757,17 @@ def to_excel(df):
         df.to_excel(writer, index=False)
 
     return output.getvalue()
+
+
+def read_uploaded_excel(uploaded_file, file_label):
+    try:
+        return pd.read_excel(uploaded_file), ""
+
+    except Exception as exc:
+        return pd.DataFrame(), (
+            f"Could not read the {file_label}. Please upload a normal Excel workbook "
+            f"with at least one visible sheet. Original error: {exc}"
+        )
 
 
 def prepare_direct_billing_df(uploaded_df):
@@ -787,6 +817,478 @@ def prepare_direct_billing_df(uploaded_df):
     direct_df = direct_df[direct_df["FSN"] != ""]
 
     return direct_df, []
+
+
+def standardize_sap_sales_file(sales_df):
+    sales_df = normalize_columns(sales_df)
+
+    column_map = {
+        "Sales Id": ["Sales Id", "Sales ID", "Order Id", "Order ID"],
+        "Site": ["Site", "SITE", "Site Id", "Site ID"],
+        "Customer Code": ["Customer Code", "Buyer Code"],
+        "GST Invoice No": ["GST Invoice No", "GSTInvoice number", "GSTInvoice No", "Invoice No."],
+        "Invoice Date": ["Invoice Date", "Billing Date"],
+        "Item": ["Item", "Item Code", "SAP Code"],
+        "Dispatch Qty": ["Dispatch Qty", "Dispatch Quantity", "Qty."],
+        "PO No": ["PO No", "PO No.", "PONo"],
+        "FSN": ["FSN", "fsn"],
+    }
+
+    rename_map = {}
+
+    for required_col, aliases in column_map.items():
+        found_col = first_existing_column(sales_df, aliases)
+        if found_col:
+            rename_map[found_col] = required_col
+
+    sales_df = sales_df.rename(columns=rename_map)
+    missing_cols = [col for col in column_map if col not in sales_df.columns]
+
+    if missing_cols:
+        return pd.DataFrame(), missing_cols
+
+    sales_df = sales_df[list(column_map.keys())].copy()
+
+    for col in ["Sales Id", "Site", "Customer Code", "GST Invoice No", "Item", "PO No", "FSN"]:
+        sales_df[col] = sales_df[col].apply(clean_text)
+
+    sales_df["Site"] = sales_df["Site"].str.upper()
+    sales_df["Dispatch Qty"] = sales_df["Dispatch Qty"].apply(clean_number)
+    sales_df["Invoice Date"] = pd.to_datetime(
+        sales_df["Invoice Date"],
+        errors="coerce"
+    ).dt.date.astype(str)
+
+    sales_df = sales_df[
+        (sales_df["Dispatch Qty"] > 0) &
+        (sales_df["GST Invoice No"] != "") &
+        (sales_df["FSN"] != "")
+    ]
+
+    grouped_df = sales_df.groupby(
+        ["Sales Id", "Site", "Customer Code", "Item", "PO No", "FSN"],
+        as_index=False
+    ).agg({
+        "Dispatch Qty": "sum",
+        "GST Invoice No": lambda x: ", ".join(sorted(set([clean_text(v) for v in x if clean_text(v) != ""]))),
+        "Invoice Date": lambda x: max([v for v in x if v and v != "NaT"], default=""),
+    })
+
+    return grouped_df, []
+
+
+def merge_invoice_numbers(existing_invoice, new_invoice):
+    invoice_values = []
+
+    for invoice_text in [existing_invoice, new_invoice]:
+        for invoice in str(invoice_text or "").split(","):
+            invoice = clean_text(invoice)
+            if invoice and invoice not in invoice_values:
+                invoice_values.append(invoice)
+
+    return ", ".join(invoice_values)
+
+
+def apply_sap_sales_invoice_upload(sales_df):
+    tracker_columns = get_allocation_tracker_columns()
+    required_columns = {"billed_qty", "balance_to_bill", "billing_source"}
+
+    if not required_columns.issubset(tracker_columns):
+        return {
+            "updated_rows": 0,
+            "matched_qty": 0,
+            "unmatched_rows": len(sales_df),
+            "unmatched_df": sales_df,
+            "error": "Missing billing repository columns. Please run the Supabase SQL update first."
+        }
+
+    tracker_df = get_tracker_df()
+
+    if tracker_df.empty:
+        return {
+            "updated_rows": 0,
+            "matched_qty": 0,
+            "unmatched_rows": len(sales_df),
+            "unmatched_df": sales_df,
+            "error": "No allocation tracker rows found."
+        }
+
+    for col in ["po_no", "order_id", "buyer_code", "rr_warehouse", "fsn", "sap_code", "invoice_no"]:
+        if col not in tracker_df.columns:
+            tracker_df[col] = ""
+        tracker_df[col] = tracker_df[col].apply(clean_text)
+
+    tracker_df["allocated_qty"] = tracker_df["allocated_qty"].apply(clean_number)
+    tracker_df["billed_qty"] = tracker_df["billed_qty"].apply(clean_number)
+    tracker_df["balance_to_bill"] = (
+        tracker_df["allocated_qty"] - tracker_df["billed_qty"]
+    ).apply(lambda x: max(x, 0))
+
+    updated_rows = 0
+    matched_qty = 0
+    unmatched_records = []
+
+    for _, sales_row in sales_df.iterrows():
+        remaining_qty = clean_number(sales_row["Dispatch Qty"])
+
+        match_mask = (
+            (tracker_df["po_no"] == clean_text(sales_row["PO No"])) &
+            (tracker_df["order_id"] == clean_text(sales_row["Sales Id"])) &
+            (tracker_df["buyer_code"] == clean_text(sales_row["Customer Code"])) &
+            (tracker_df["rr_warehouse"] == clean_text(sales_row["Site"]).upper()) &
+            (tracker_df["fsn"] == clean_text(sales_row["FSN"])) &
+            (tracker_df["sap_code"] == clean_text(sales_row["Item"])) &
+            (tracker_df["balance_to_bill"] > 0)
+        )
+
+        matched_tracker = tracker_df[match_mask].sort_values("id")
+
+        for tracker_idx, tracker_row in matched_tracker.iterrows():
+            if remaining_qty <= 0:
+                break
+
+            tracker_balance = clean_number(tracker_df.loc[tracker_idx, "balance_to_bill"])
+            qty_to_apply = min(remaining_qty, tracker_balance)
+
+            if qty_to_apply <= 0:
+                continue
+
+            new_billed_qty = clean_number(tracker_df.loc[tracker_idx, "billed_qty"]) + qty_to_apply
+            allocated_qty = clean_number(tracker_df.loc[tracker_idx, "allocated_qty"])
+            new_balance = max(allocated_qty - new_billed_qty, 0)
+            billing_done = "Yes" if new_balance <= 0 else "No"
+            invoice_no = merge_invoice_numbers(
+                tracker_df.loc[tracker_idx, "invoice_no"],
+                sales_row["GST Invoice No"]
+            )
+
+            db_execute("""
+                UPDATE allocation_tracker
+                SET
+                    sent_for_billing = 'Yes',
+                    sent_date = COALESCE(NULLIF(sent_date, ''), :sent_date),
+                    billed_qty = :billed_qty,
+                    balance_to_bill = :balance_to_bill,
+                    billing_done = :billing_done,
+                    billing_date = :billing_date,
+                    invoice_no = :invoice_no,
+                    billing_source = :billing_source
+                WHERE id = :id
+            """, {
+                "sent_date": str(sales_row["Invoice Date"]),
+                "billed_qty": new_billed_qty,
+                "balance_to_bill": new_balance,
+                "billing_done": billing_done,
+                "billing_date": str(sales_row["Invoice Date"]),
+                "invoice_no": invoice_no,
+                "billing_source": "SAP Sales Upload",
+                "id": int(tracker_row["id"])
+            })
+
+            tracker_df.loc[tracker_idx, "billed_qty"] = new_billed_qty
+            tracker_df.loc[tracker_idx, "balance_to_bill"] = new_balance
+            tracker_df.loc[tracker_idx, "invoice_no"] = invoice_no
+
+            remaining_qty -= qty_to_apply
+            matched_qty += qty_to_apply
+            updated_rows += 1
+
+        if remaining_qty > 0:
+            unmatched_record = sales_row.to_dict()
+            unmatched_record["Unmatched Qty"] = remaining_qty
+            unmatched_records.append(unmatched_record)
+
+    unmatched_df = pd.DataFrame(unmatched_records)
+
+    return {
+        "updated_rows": updated_rows,
+        "matched_qty": matched_qty,
+        "unmatched_rows": len(unmatched_df),
+        "unmatched_df": unmatched_df,
+        "error": ""
+    }
+
+
+def prepare_opening_repository_df(uploaded_df):
+    repo_df = normalize_columns(uploaded_df)
+
+    aliases = {
+        "PO No.": ["PO No.", "PO No", "PONo", "PO"],
+        "Order ID": ["Order ID", "Order Id", "Sales Id"],
+        "Buyer Code": ["Buyer Code", "Customer Code"],
+        "FSN": ["FSN"],
+        "Title": ["Title", "Item Description", "Item Name"],
+        "RR Warehouse": ["RR Warehouse", "Site", "Site Id"],
+        "FK Warehouse": ["FK Warehouse", "FK FC"],
+        "SAP Code": ["SAP Code", "Item Code", "Item"],
+        "Allocated Qty.": ["Allocated Qty.", "Allocated Qty", "Dispatch Qty", "Qty."],
+        "Pending Amount": ["Pending Amount", "Pending Amt", "Dispatch Amount"],
+        "Invoice No.": ["Invoice No.", "GST Invoice No", "GSTInvoice number"],
+        "Billing Date": ["Billing Date", "Invoice Date"],
+    }
+
+    rename_map = {}
+
+    for target_col, options in aliases.items():
+        found_col = first_existing_column(repo_df, options)
+        if found_col:
+            rename_map[found_col] = target_col
+
+    repo_df = repo_df.rename(columns=rename_map)
+
+    required_cols = ["PO No.", "FSN", "RR Warehouse", "SAP Code", "Allocated Qty."]
+    missing_cols = [col for col in required_cols if col not in repo_df.columns]
+
+    if missing_cols:
+        return pd.DataFrame(), missing_cols
+
+    for col in ["Order ID", "Buyer Code", "Title", "FK Warehouse", "Pending Amount", "Invoice No.", "Billing Date"]:
+        if col not in repo_df.columns:
+            repo_df[col] = "" if col != "Pending Amount" else 0
+
+    for col in ["PO No.", "Order ID", "Buyer Code", "FSN", "Title", "RR Warehouse", "FK Warehouse", "SAP Code", "Invoice No.", "Billing Date"]:
+        repo_df[col] = repo_df[col].apply(clean_text)
+
+    repo_df["RR Warehouse"] = repo_df["RR Warehouse"].str.upper()
+    repo_df["Allocated Qty."] = repo_df["Allocated Qty."].apply(clean_number)
+    repo_df["Pending Amount"] = repo_df["Pending Amount"].apply(clean_number)
+
+    repo_df = repo_df[
+        (repo_df["FSN"] != "") &
+        (repo_df["Allocated Qty."] > 0)
+    ]
+
+    return repo_df[
+        [
+            "PO No.",
+            "Order ID",
+            "Buyer Code",
+            "FSN",
+            "Title",
+            "RR Warehouse",
+            "FK Warehouse",
+            "SAP Code",
+            "Allocated Qty.",
+            "Pending Amount",
+            "Invoice No.",
+            "Billing Date",
+        ]
+    ], []
+
+
+def save_opening_repository(repo_df):
+    saved_count = 0
+    tracker_columns = get_allocation_tracker_columns()
+
+    for _, row in repo_df.iterrows():
+        allocated_qty = clean_number(row["Allocated Qty."])
+        invoice_no = clean_text(row["Invoice No."])
+        billed_qty = allocated_qty if invoice_no else 0
+        balance_to_bill = max(allocated_qty - billed_qty, 0)
+        billing_done = "Yes" if balance_to_bill <= 0 and invoice_no else "No"
+
+        insert_columns = [
+            "allocation_date",
+            "po_no",
+            "fsn",
+            "title",
+            "rr_warehouse",
+            "fk_warehouse",
+            "sap_code",
+            "allocated_qty",
+            "sent_for_billing",
+            "sent_date",
+            "billing_done",
+            "billing_date",
+            "invoice_no",
+            "remark",
+        ]
+
+        value_keys = [
+            ":allocation_date",
+            ":po_no",
+            ":fsn",
+            ":title",
+            ":rr_warehouse",
+            ":fk_warehouse",
+            ":sap_code",
+            ":allocated_qty",
+            ":sent_for_billing",
+            ":sent_date",
+            ":billing_done",
+            ":billing_date",
+            ":invoice_no",
+            ":remark",
+        ]
+
+        params = {
+            "allocation_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "po_no": row["PO No."],
+            "fsn": row["FSN"],
+            "title": row["Title"],
+            "rr_warehouse": row["RR Warehouse"],
+            "fk_warehouse": row["FK Warehouse"],
+            "sap_code": row["SAP Code"],
+            "allocated_qty": allocated_qty,
+            "sent_for_billing": "Yes",
+            "sent_date": str(row["Billing Date"]) if row["Billing Date"] else datetime.now().strftime("%Y-%m-%d"),
+            "billing_done": billing_done,
+            "billing_date": str(row["Billing Date"]),
+            "invoice_no": invoice_no,
+            "remark": "Opening Repository Upload",
+        }
+
+        optional_values = {
+            "order_id": row["Order ID"],
+            "buyer_code": row["Buyer Code"],
+            "pending_amount": clean_number(row["Pending Amount"]),
+            "billed_qty": billed_qty,
+            "balance_to_bill": balance_to_bill,
+            "billing_source": "Opening Repository Upload",
+        }
+
+        for col, value in optional_values.items():
+            if col in tracker_columns:
+                insert_columns.append(col)
+                value_keys.append(f":{col}")
+                params[col] = value
+
+        db_execute(f"""
+        INSERT INTO allocation_tracker (
+            {", ".join(insert_columns)}
+        )
+        VALUES (
+            {", ".join(value_keys)}
+        )
+        """, params)
+
+        saved_count += 1
+
+    return saved_count
+
+
+def render_opening_repository_upload():
+    st.markdown("---")
+    st.subheader("Opening Billing Repository Upload")
+    st.caption(
+        "Use this once for billing already sent before this tracker became live. "
+        "Accepted columns include PO No., Order ID, Buyer Code, FSN, RR Warehouse, "
+        "SAP Code, Allocated Qty., Invoice No., and Billing Date."
+    )
+
+    opening_file = st.file_uploader(
+        "Upload Opening Billing Repository File",
+        type=["xlsx"],
+        key="opening_repository_file"
+    )
+
+    if opening_file is None:
+        return
+
+    uploaded_df, read_error = read_uploaded_excel(
+        opening_file,
+        "Opening Billing Repository file"
+    )
+
+    if read_error:
+        st.error(read_error)
+        return
+
+    repo_df, missing_cols = prepare_opening_repository_df(uploaded_df)
+
+    if missing_cols:
+        st.error(f"Missing required columns in Opening Repository file: {missing_cols}")
+        st.write("Columns found:", list(normalize_columns(uploaded_df).columns))
+        return
+
+    if repo_df.empty:
+        st.warning("No usable rows found in the Opening Repository file.")
+        return
+
+    st.write(f"Usable rows found: {len(repo_df):,}")
+    st.dataframe(repo_df, use_container_width=True)
+
+    if st.button("Save Opening Repository to Tracker"):
+        saved_count = save_opening_repository(repo_df)
+        log_activity(
+            "opening_repository_upload",
+            f"{saved_count} opening repository rows saved"
+        )
+        st.success(f"{saved_count} opening repository rows saved successfully")
+        st.rerun()
+
+
+def render_sap_sales_invoice_upload():
+    st.markdown("---")
+    st.subheader("SAP Sales Invoice Upload")
+    st.caption(
+        "Upload the SAP Sales file to automatically map GST Invoice No. and billed quantity "
+        "against existing allocation rows."
+    )
+
+    sap_sales_file = st.file_uploader(
+        "Upload SAP Sales File",
+        type=["xlsx"],
+        key="sap_sales_invoice_file"
+    )
+
+    if sap_sales_file is None:
+        return
+
+    uploaded_df, read_error = read_uploaded_excel(
+        sap_sales_file,
+        "SAP Sales file"
+    )
+
+    if read_error:
+        st.error(read_error)
+        return
+
+    sales_df, missing_cols = standardize_sap_sales_file(uploaded_df)
+
+    if missing_cols:
+        st.error(f"Missing required columns in SAP Sales file: {missing_cols}")
+        st.write("Columns found:", list(normalize_columns(uploaded_df).columns))
+        return
+
+    if sales_df.empty:
+        st.warning("No usable positive dispatch rows with invoice number and FSN were found.")
+        return
+
+    st.write(f"Usable invoice rows found: {len(sales_df):,}")
+    st.dataframe(sales_df, use_container_width=True)
+
+    if st.button("Apply SAP Sales Invoice Update"):
+        result = apply_sap_sales_invoice_upload(sales_df)
+
+        if result["error"]:
+            st.error(result["error"])
+
+        st.success(
+            f"Updated {result['updated_rows']} tracker rows. "
+            f"Matched billed quantity: {result['matched_qty']:,.0f}."
+        )
+
+        if result["unmatched_rows"] > 0:
+            st.warning(
+                f"{result['unmatched_rows']} SAP Sales rows could not be fully matched. "
+                "Download and review these rows."
+            )
+            st.dataframe(result["unmatched_df"], use_container_width=True)
+            st.download_button(
+                "Download Unmatched SAP Sales Rows",
+                data=to_excel(result["unmatched_df"]),
+                file_name="unmatched_sap_sales_rows.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        log_activity(
+            "sap_sales_invoice_upload",
+            f"Updated {result['updated_rows']} rows, matched qty {result['matched_qty']}"
+        )
+
+        if result["unmatched_rows"] == 0 and not result["error"]:
+            st.rerun()
 
 
 # =====================================================
@@ -1233,6 +1735,9 @@ def save_allocation(df):
     has_order_id = "order_id" in tracker_columns
     has_buyer_code = "buyer_code" in tracker_columns
     has_pending_amount = "pending_amount" in tracker_columns
+    has_billed_qty = "billed_qty" in tracker_columns
+    has_balance_to_bill = "balance_to_bill" in tracker_columns
+    has_billing_source = "billing_source" in tracker_columns
 
     for _, r in df.iterrows():
         if clean_number(r["Allocated Qty."]) <= 0:
@@ -1301,6 +1806,21 @@ def save_allocation(df):
             value_keys.insert(insert_at, ":pending_amount")
             params["pending_amount"] = clean_number(r.get("Pending Amount", 0))
 
+        if has_billed_qty:
+            insert_columns.insert(-3, "billed_qty")
+            value_keys.insert(-3, ":billed_qty")
+            params["billed_qty"] = 0
+
+        if has_balance_to_bill:
+            insert_columns.insert(-3, "balance_to_bill")
+            value_keys.insert(-3, ":balance_to_bill")
+            params["balance_to_bill"] = clean_number(r["Allocated Qty."])
+
+        if has_billing_source:
+            insert_columns.insert(-1, "billing_source")
+            value_keys.insert(-1, ":billing_source")
+            params["billing_source"] = "Allocation"
+
         db_execute(f"""
         INSERT INTO allocation_tracker (
             {", ".join(insert_columns)}
@@ -1353,7 +1873,10 @@ if menu == "Dashboard Summary":
 
     total_alloc = tracker["allocated_qty"].sum() if not tracker.empty else 0
     sent_qty = tracker[tracker["sent_for_billing"] == "Yes"]["allocated_qty"].sum() if not tracker.empty else 0
-    billed_qty = tracker[tracker["billing_done"] == "Yes"]["allocated_qty"].sum() if not tracker.empty else 0
+    if not tracker.empty and "billed_qty" in tracker.columns:
+        billed_qty = tracker["billed_qty"].fillna(0).sum()
+    else:
+        billed_qty = tracker[tracker["billing_done"] == "Yes"]["allocated_qty"].sum() if not tracker.empty else 0
     open_qty = open_alloc["open_alloc_qty"].sum() if not open_alloc.empty else 0
 
     c1, c2, c3, c4 = st.columns(4)
@@ -1389,6 +1912,61 @@ if menu == "Dashboard Summary":
     st.markdown("---")
 
     if not tracker.empty:
+        st.subheader("Date-wise Billing Summary")
+
+        summary_c1, summary_c2 = st.columns(2)
+
+        with summary_c1:
+            sent_summary = tracker.copy()
+            sent_summary["sent_date"] = pd.to_datetime(
+                sent_summary["sent_date"],
+                errors="coerce"
+            ).dt.date
+            sent_summary = sent_summary[
+                (sent_summary["sent_for_billing"] == "Yes") &
+                (sent_summary["sent_date"].notna())
+            ]
+
+            if sent_summary.empty:
+                st.info("No date-wise sent for billing data yet.")
+            else:
+                sent_summary = sent_summary.groupby(
+                    "sent_date",
+                    as_index=False
+                )["allocated_qty"].sum().rename(columns={
+                    "sent_date": "Sent Date",
+                    "allocated_qty": "Sent Qty"
+                })
+                st.markdown("#### Sent for Billing")
+                st.dataframe(sent_summary, use_container_width=True)
+
+        with summary_c2:
+            billed_summary = tracker.copy()
+            billed_summary["billing_date"] = pd.to_datetime(
+                billed_summary["billing_date"],
+                errors="coerce"
+            ).dt.date
+            billed_summary = billed_summary[
+                (billed_summary["billing_done"] == "Yes") &
+                (billed_summary["billing_date"].notna())
+            ]
+
+            if billed_summary.empty:
+                st.info("No date-wise billing done data yet.")
+            else:
+                billed_qty_column = "billed_qty" if "billed_qty" in billed_summary.columns else "allocated_qty"
+                billed_summary[billed_qty_column] = billed_summary[billed_qty_column].fillna(0)
+                billed_summary = billed_summary.groupby(
+                    "billing_date",
+                    as_index=False
+                )[billed_qty_column].sum().rename(columns={
+                    "billing_date": "Billing Date",
+                    billed_qty_column: "Billed Qty"
+                })
+                st.markdown("#### Billing Done")
+                st.dataframe(billed_summary, use_container_width=True)
+
+        st.markdown("---")
         st.subheader("Recent Allocation Records")
         st.dataframe(tracker, use_container_width=True)
     else:
@@ -1572,6 +2150,9 @@ elif menu == "Allocation Tracker":
 
     tracker = get_tracker_df()
 
+    render_opening_repository_upload()
+    render_sap_sales_invoice_upload()
+
     if tracker.empty:
         st.info("No allocation records found.")
 
@@ -1582,6 +2163,15 @@ elif menu == "Allocation Tracker":
         editable_tracker["billing_done"] = editable_tracker["billing_done"].fillna("No")
         editable_tracker["invoice_no"] = editable_tracker["invoice_no"].fillna("")
         editable_tracker["remark"] = editable_tracker["remark"].fillna("")
+
+        if "billed_qty" in editable_tracker.columns:
+            editable_tracker["billed_qty"] = editable_tracker["billed_qty"].fillna(0)
+
+        if "balance_to_bill" in editable_tracker.columns:
+            editable_tracker["balance_to_bill"] = (
+                editable_tracker["allocated_qty"].fillna(0) -
+                editable_tracker.get("billed_qty", 0)
+            ).apply(lambda x: max(clean_number(x), 0))
 
         editable_tracker["sent_for_billing_tick"] = editable_tracker["sent_for_billing"].apply(
             lambda x: True if str(x).strip().lower() == "yes" else False
@@ -1619,6 +2209,8 @@ elif menu == "Allocation Tracker":
             "sap_code",
             "pending_amount",
             "allocated_qty",
+            "billed_qty",
+            "balance_to_bill",
             "sent_date",
             "billing_date",
             "invoice_no",
@@ -1692,17 +2284,33 @@ elif menu == "Allocation Tracker":
                         })
 
                     if bulk_billing_tick:
-                        db_execute("""
-                        UPDATE allocation_tracker
-                        SET
-                            billing_done = :billing_done,
-                            billing_date = :billing_date
-                        WHERE id = :id
-                        """, {
-                            "billing_done": "Yes",
-                            "billing_date": str(bulk_billing_date),
-                            "id": int(allocation_id)
-                        })
+                        if "billed_qty" in tracker.columns and "balance_to_bill" in tracker.columns:
+                            db_execute("""
+                            UPDATE allocation_tracker
+                            SET
+                                billing_done = :billing_done,
+                                billing_date = :billing_date,
+                                billed_qty = allocated_qty,
+                                balance_to_bill = 0
+                            WHERE id = :id
+                            """, {
+                                "billing_done": "Yes",
+                                "billing_date": str(bulk_billing_date),
+                                "id": int(allocation_id)
+                            })
+
+                        else:
+                            db_execute("""
+                            UPDATE allocation_tracker
+                            SET
+                                billing_done = :billing_done,
+                                billing_date = :billing_date
+                            WHERE id = :id
+                            """, {
+                                "billing_done": "Yes",
+                                "billing_date": str(bulk_billing_date),
+                                "id": int(allocation_id)
+                            })
 
                     if bulk_invoice_no.strip() != "":
                         db_execute("""
@@ -1746,6 +2354,8 @@ elif menu == "Allocation Tracker":
                 "sap_code": st.column_config.TextColumn("SAP Code", disabled=True),
                 "pending_amount": st.column_config.NumberColumn("Pending Amount", disabled=True),
                 "allocated_qty": st.column_config.NumberColumn("Allocated Qty.", disabled=True),
+                "billed_qty": st.column_config.NumberColumn("Billed Qty."),
+                "balance_to_bill": st.column_config.NumberColumn("Balance To Bill", disabled=True),
                 "sent_date": st.column_config.DateColumn("Sent Date", format="DD-MM-YYYY"),
                 "billing_date": st.column_config.DateColumn("Billing Date", format="DD-MM-YYYY"),
                 "invoice_no": st.column_config.TextColumn("Invoice No."),
@@ -1759,6 +2369,12 @@ elif menu == "Allocation Tracker":
             for _, row in edited_df.iterrows():
                 sent_value = "Yes" if row["sent_for_billing_tick"] else "No"
                 billed_value = "Yes" if row["billing_done_tick"] else "No"
+                manual_billed_qty = clean_number(row.get("billed_qty", 0))
+                manual_allocated_qty = clean_number(row.get("allocated_qty", 0))
+                manual_balance_to_bill = max(manual_allocated_qty - manual_billed_qty, 0)
+
+                if "billed_qty" in edited_df.columns:
+                    billed_value = "Yes" if manual_balance_to_bill <= 0 and manual_allocated_qty > 0 else "No"
 
                 db_execute("""
                 UPDATE allocation_tracker
@@ -1779,6 +2395,19 @@ elif menu == "Allocation Tracker":
                     "remark": row["remark"],
                     "id": int(row["id"])
                 })
+
+                if "billed_qty" in edited_df.columns and "balance_to_bill" in tracker.columns:
+                    db_execute("""
+                    UPDATE allocation_tracker
+                    SET
+                        billed_qty = :billed_qty,
+                        balance_to_bill = :balance_to_bill
+                    WHERE id = :id
+                    """, {
+                        "billed_qty": manual_billed_qty,
+                        "balance_to_bill": manual_balance_to_bill,
+                        "id": int(row["id"])
+                    })
 
             st.success("Manual tracker updates saved successfully")
             st.rerun()
