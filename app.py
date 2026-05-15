@@ -1023,8 +1023,7 @@ def prepare_opening_repository_df(uploaded_df):
         "SAP Code": ["SAP Code", "Item Code", "Item"],
         "Allocated Qty.": ["Allocated Qty.", "Allocated Qty", "Dispatch Qty", "Qty."],
         "Pending Amount": ["Pending Amount", "Pending Amt", "Dispatch Amount"],
-        "Invoice No.": ["Invoice No.", "GST Invoice No", "GSTInvoice number"],
-        "Billing Date": ["Billing Date", "Invoice Date"],
+        "Sent Date": ["Sent Date", "Billing Sent Date", "Allocation Date"],
     }
 
     rename_map = {}
@@ -1042,11 +1041,11 @@ def prepare_opening_repository_df(uploaded_df):
     if missing_cols:
         return pd.DataFrame(), missing_cols
 
-    for col in ["Order ID", "Buyer Code", "Title", "FK Warehouse", "Pending Amount", "Invoice No.", "Billing Date"]:
+    for col in ["Order ID", "Buyer Code", "Title", "FK Warehouse", "Pending Amount", "Sent Date"]:
         if col not in repo_df.columns:
             repo_df[col] = "" if col != "Pending Amount" else 0
 
-    for col in ["PO No.", "Order ID", "Buyer Code", "FSN", "Title", "RR Warehouse", "FK Warehouse", "SAP Code", "Invoice No.", "Billing Date"]:
+    for col in ["PO No.", "Order ID", "Buyer Code", "FSN", "Title", "RR Warehouse", "FK Warehouse", "SAP Code", "Sent Date"]:
         repo_df[col] = repo_df[col].apply(clean_text)
 
     repo_df["RR Warehouse"] = repo_df["RR Warehouse"].str.upper()
@@ -1070,8 +1069,7 @@ def prepare_opening_repository_df(uploaded_df):
             "SAP Code",
             "Allocated Qty.",
             "Pending Amount",
-            "Invoice No.",
-            "Billing Date",
+            "Sent Date",
         ]
     ], []
 
@@ -1082,10 +1080,8 @@ def save_opening_repository(repo_df):
 
     for _, row in repo_df.iterrows():
         allocated_qty = clean_number(row["Allocated Qty."])
-        invoice_no = clean_text(row["Invoice No."])
-        billed_qty = allocated_qty if invoice_no else 0
+        billed_qty = 0
         balance_to_bill = max(allocated_qty - billed_qty, 0)
-        billing_done = "Yes" if balance_to_bill <= 0 and invoice_no else "No"
 
         insert_columns = [
             "allocation_date",
@@ -1099,7 +1095,6 @@ def save_opening_repository(repo_df):
             "sent_for_billing",
             "sent_date",
             "billing_done",
-            "billing_date",
             "invoice_no",
             "remark",
         ]
@@ -1116,7 +1111,6 @@ def save_opening_repository(repo_df):
             ":sent_for_billing",
             ":sent_date",
             ":billing_done",
-            ":billing_date",
             ":invoice_no",
             ":remark",
         ]
@@ -1131,11 +1125,10 @@ def save_opening_repository(repo_df):
             "sap_code": row["SAP Code"],
             "allocated_qty": allocated_qty,
             "sent_for_billing": "Yes",
-            "sent_date": str(row["Billing Date"]) if row["Billing Date"] else datetime.now().strftime("%Y-%m-%d"),
-            "billing_done": billing_done,
-            "billing_date": str(row["Billing Date"]),
-            "invoice_no": invoice_no,
-            "remark": "Opening Repository Upload",
+            "sent_date": str(row["Sent Date"]) if row["Sent Date"] else datetime.now().strftime("%Y-%m-%d"),
+            "billing_done": "No",
+            "invoice_no": "",
+            "remark": "Sent For Billing Repository Upload",
         }
 
         optional_values = {
@@ -1144,7 +1137,7 @@ def save_opening_repository(repo_df):
             "pending_amount": clean_number(row["Pending Amount"]),
             "billed_qty": billed_qty,
             "balance_to_bill": balance_to_bill,
-            "billing_source": "Opening Repository Upload",
+            "billing_source": "Sent For Billing Repository Upload",
         }
 
         for col, value in optional_values.items():
@@ -1169,15 +1162,16 @@ def save_opening_repository(repo_df):
 
 def render_opening_repository_upload():
     st.markdown("---")
-    st.subheader("Opening Billing Repository Upload")
+    st.subheader("Sent For Billing Repository Upload")
     st.caption(
-        "Use this once for billing already sent before this tracker became live. "
+        "Upload the quantity/allocation already sent for billing. "
+        "These rows stay open until the SAP Sales upload confirms billed quantity and invoice number. "
         "Accepted columns include PO No., Order ID, Buyer Code, FSN, RR Warehouse, "
-        "SAP Code, Allocated Qty., Invoice No., and Billing Date."
+        "SAP Code, Allocated Qty., Pending Amount, and optional Sent Date."
     )
 
     opening_file = st.file_uploader(
-        "Upload Opening Billing Repository File",
+        "Upload Sent For Billing Repository File",
         type=["xlsx"],
         key="opening_repository_file"
     )
@@ -1187,7 +1181,7 @@ def render_opening_repository_upload():
 
     uploaded_df, read_error = read_uploaded_excel(
         opening_file,
-        "Opening Billing Repository file"
+        "Sent For Billing Repository file"
     )
 
     if read_error:
@@ -1197,24 +1191,24 @@ def render_opening_repository_upload():
     repo_df, missing_cols = prepare_opening_repository_df(uploaded_df)
 
     if missing_cols:
-        st.error(f"Missing required columns in Opening Repository file: {missing_cols}")
+        st.error(f"Missing required columns in Sent For Billing Repository file: {missing_cols}")
         st.write("Columns found:", list(normalize_columns(uploaded_df).columns))
         return
 
     if repo_df.empty:
-        st.warning("No usable rows found in the Opening Repository file.")
+        st.warning("No usable rows found in the Sent For Billing Repository file.")
         return
 
     st.write(f"Usable rows found: {len(repo_df):,}")
     st.dataframe(repo_df, use_container_width=True)
 
-    if st.button("Save Opening Repository to Tracker"):
+    if st.button("Save Sent For Billing Repository to Tracker"):
         saved_count = save_opening_repository(repo_df)
         log_activity(
-            "opening_repository_upload",
-            f"{saved_count} opening repository rows saved"
+            "sent_for_billing_repository_upload",
+            f"{saved_count} sent for billing repository rows saved"
         )
-        st.success(f"{saved_count} opening repository rows saved successfully")
+        st.success(f"{saved_count} sent for billing repository rows saved successfully")
         st.rerun()
 
 
