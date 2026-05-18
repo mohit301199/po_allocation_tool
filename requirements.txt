@@ -5,3 +5,5 @@ reportlab
 sqlalchemy
 psycopg2-binary
 bcrypt
+python-barcode
+Pillow

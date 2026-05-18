@@ -5,9 +5,12 @@ import bcrypt
 from datetime import datetime
 from io import BytesIO
 
-from openpyxl import load_workbook, Workbook
+from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Font, PatternFill, Alignment
+
+from barcode import Code128
+from barcode.writer import ImageWriter
 
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Image, Spacer
 from reportlab.lib import colors
@@ -780,31 +783,45 @@ def get_sent_for_billing_download_df(tracker_df):
 
 
 # =====================================================
-# EXTRACT EAN BARCODE IMAGES
+# FSN BARCODE GENERATION
 # =====================================================
 
-def extract_ean_images_from_excel(ean_file):
-    wb = load_workbook(ean_file)
-    ws = wb.active
-    ean_map = {}
 
-    for img in ws._images:
-        try:
-            row_no = img.anchor._from.row + 1
-            fsn = ws.cell(
-                row=row_no,
-                column=1
-            ).value
+def generate_fsn_barcode_bytes(fsn):
+    fsn = clean_text(fsn)
 
-            if fsn:
-                fsn = clean_text(fsn)
-                img_bytes = img._data()
-                ean_map[fsn] = img_bytes
+    if not fsn:
+        return None
 
-        except Exception:
-            pass
+    output = BytesIO()
+    barcode = Code128(fsn, writer=ImageWriter())
+    barcode.write(
+        output,
+        options={
+            "module_width": 0.32,
+            "module_height": 18,
+            "quiet_zone": 3,
+            "font_size": 9,
+            "text_distance": 3,
+            "write_text": True,
+            "dpi": 300,
+        }
+    )
+    output.seek(0)
 
-    return ean_map
+    return output.getvalue()
+
+
+def get_fsn_barcode_bytes(fsn, barcode_cache):
+    fsn = clean_text(fsn)
+
+    if not fsn:
+        return None
+
+    if fsn not in barcode_cache:
+        barcode_cache[fsn] = generate_fsn_barcode_bytes(fsn)
+
+    return barcode_cache[fsn]
 
 
 def to_excel(df):
@@ -880,7 +897,7 @@ def prepare_direct_billing_df(uploaded_df):
 # BILLING SUMMARY WITH EXACT BARCODES
 # =====================================================
 
-def to_excel_billing_with_exact_barcodes(billing_df, ean_image_map):
+def to_excel_billing_with_exact_barcodes(billing_df, fsn_barcode_cache):
     output = BytesIO()
     wb = Workbook()
     ws = wb.active
@@ -890,7 +907,7 @@ def to_excel_billing_with_exact_barcodes(billing_df, ean_image_map):
         "Invoice No.",
         "PO No.",
         "FSN",
-        "EAN Scanner",
+        "FSN Barcode",
         "Title",
         "RR Warehouse",
         "FK Warehouse",
@@ -943,13 +960,15 @@ def to_excel_billing_with_exact_barcodes(billing_df, ean_image_map):
 
         ws.row_dimensions[excel_row].height = 115
 
-        if fsn in ean_image_map:
+        barcode_bytes = get_fsn_barcode_bytes(fsn, fsn_barcode_cache)
+
+        if barcode_bytes:
             temp_file = tempfile.NamedTemporaryFile(
                 delete=False,
                 suffix=".png"
             )
 
-            temp_file.write(ean_image_map[fsn])
+            temp_file.write(barcode_bytes)
             temp_file.close()
             temp_files.append(temp_file.name)
 
@@ -989,7 +1008,7 @@ def to_excel_billing_with_exact_barcodes(billing_df, ean_image_map):
 # STICKER PDF GENERATOR
 # =====================================================
 
-def generate_sticker_pdf(billing_df, ean_image_map):
+def generate_sticker_pdf(billing_df, fsn_barcode_cache):
     pdf_buffer = BytesIO()
 
     doc = SimpleDocTemplate(
@@ -1013,13 +1032,15 @@ def generate_sticker_pdf(billing_df, ean_image_map):
         sticker_data = []
 
         for i in range(8):
-            if fsn in ean_image_map:
+            barcode_bytes = get_fsn_barcode_bytes(fsn, fsn_barcode_cache)
+
+            if barcode_bytes:
                 temp_file = tempfile.NamedTemporaryFile(
                     delete=False,
                     suffix=".png"
                 )
 
-                temp_file.write(ean_image_map[fsn])
+                temp_file.write(barcode_bytes)
                 temp_file.close()
                 temp_files.append(temp_file.name)
 
@@ -2017,20 +2038,11 @@ elif menu == "Allocation Tracker":
 elif menu == "Billing Summary":
     render_page_header(
         "Billing Summary",
-        "Generate barcode Excel and sticker PDFs from tracker data or urgent direct uploads."
+        "Generate FSN barcode Excel and sticker PDFs from tracker data or urgent direct uploads."
     )
 
-    ean_file = st.file_uploader(
-        "Upload EAN Barcode File",
-        type=["xlsx"],
-        key="ean_barcode_file"
-    )
-
-    ean_image_map = {}
-
-    if ean_file is not None:
-        ean_image_map = extract_ean_images_from_excel(ean_file)
-        st.success(f"{len(ean_image_map)} barcode images mapped successfully")
+    fsn_barcode_cache = {}
+    st.info("Barcode images are generated automatically from FSN. No barcode image upload is required.")
 
     st.markdown("### Urgent Direct Barcode Download")
     st.caption(
@@ -2086,14 +2098,10 @@ elif menu == "Billing Summary":
                 st.warning("No valid FSN rows found in the direct billing file.")
 
             else:
-                missing_barcode_count = direct_billing_df["FSN"].apply(
-                    lambda fsn: clean_text(fsn) not in ean_image_map
-                ).sum()
-
                 d1, d2, d3 = st.columns(3)
                 d1.metric("Rows Uploaded", len(direct_billing_df))
                 d2.metric("Total Qty", f"{direct_billing_df['Qty.'].sum():,.0f}")
-                d3.metric("Missing Barcodes", int(missing_barcode_count))
+                d3.metric("Generated Barcodes", direct_billing_df["FSN"].nunique())
 
                 st.dataframe(direct_billing_df, use_container_width=True)
 
@@ -2104,7 +2112,7 @@ elif menu == "Billing Summary":
                         "Download Direct Barcode Excel",
                         data=to_excel_billing_with_exact_barcodes(
                             direct_billing_df,
-                            ean_image_map
+                            fsn_barcode_cache
                         ),
                         file_name="direct_billing_barcode_sheet.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -2115,7 +2123,7 @@ elif menu == "Billing Summary":
                         "Download Direct Sticker PDF",
                         data=generate_sticker_pdf(
                             direct_billing_df,
-                            ean_image_map
+                            fsn_barcode_cache
                         ),
                         file_name="direct_warehouse_sticker_sheet.pdf",
                         mime="application/pdf"
@@ -2174,11 +2182,13 @@ elif menu == "Billing Summary":
                     st.write(row["FSN"])
 
                 with c4:
-                    st.markdown("**EAN Scanner**")
+                    st.markdown("**FSN Barcode**")
 
-                    if fsn in ean_image_map:
+                    barcode_bytes = get_fsn_barcode_bytes(fsn, fsn_barcode_cache)
+
+                    if barcode_bytes:
                         st.image(
-                            ean_image_map[fsn],
+                            barcode_bytes,
                             width=300
                         )
                     else:
@@ -2213,7 +2223,7 @@ elif menu == "Billing Summary":
             "Download Billing Summary With Exact Barcode",
             data=to_excel_billing_with_exact_barcodes(
                 billing_df,
-                ean_image_map
+                fsn_barcode_cache
             ),
             file_name="billing_summary_with_exact_barcode.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -2223,7 +2233,7 @@ elif menu == "Billing Summary":
             "Download Warehouse Sticker Sheet PDF",
             data=generate_sticker_pdf(
                 billing_df,
-                ean_image_map
+                fsn_barcode_cache
             ),
             file_name="warehouse_sticker_sheet.pdf",
             mime="application/pdf"
