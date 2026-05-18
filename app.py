@@ -1240,6 +1240,7 @@ def run_allocation(pending_df, stock_df):
         remaining = pending_qty
         allocated_anything = False
         pending_shown_for_demand = False
+        allocation_row_indexes = []
 
         if pending_qty <= 0:
             result.append({
@@ -1285,6 +1286,8 @@ def run_allocation(pending_df, stock_df):
                 stock_df.loc[idx, "usable_stock"] = usable - alloc
                 remaining -= alloc
 
+                allocation_row_indexes.append(len(result))
+
                 result.append({
                     "PO No.": po,
                     "Order ID": order_id,
@@ -1297,13 +1300,16 @@ def run_allocation(pending_df, stock_df):
                     "Pending Qty.": row_pending_qty,
                     "Pending Amount": row_pending_amount,
                     "Allocated Qty.": alloc,
-                    "Balance Pending Qty.": remaining,
+                    "Balance Pending Qty.": 0,
                     "Current Stock": s["Stock"],
                     "Open Allocation Qty": s["open_alloc_qty"],
                     "Usable Stock Before": usable,
                     "Usable Stock After": usable - alloc,
                     "Status": "Allocated"
                 })
+
+        if allocation_row_indexes:
+            result[allocation_row_indexes[-1]]["Balance Pending Qty."] = remaining
 
         if not allocated_anything:
             result.append({
