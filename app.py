@@ -1236,14 +1236,6 @@ def run_allocation(pending_df, stock_df):
         already_allocated_qty = clean_number(p["already_allocated_qty"])
         pending_qty = clean_number(p["Allocatable Pending Qty."])
         pending_unit_amount = pending_amount / uploaded_pending_qty if uploaded_pending_qty > 0 else 0
-        already_allocated_amount = min(
-            already_allocated_qty * pending_unit_amount,
-            pending_amount
-        )
-        allocatable_pending_amount = max(
-            pending_amount - already_allocated_amount,
-            0
-        )
 
         remaining = pending_qty
         allocated_anything = False
@@ -1258,17 +1250,10 @@ def run_allocation(pending_df, stock_df):
                 "RR Warehouse": rr,
                 "FK Warehouse": fk,
                 "SAP Code": "",
-                "Pending Qty.": uploaded_pending_qty,
-                "Total Pending Amount": pending_amount,
+                "Pending Qty.": pending_qty,
                 "Pending Amount": 0,
-                "Already Allocated Qty.": already_allocated_qty,
-                "Already Allocated Amount": already_allocated_amount,
-                "Allocatable Pending Qty.": pending_qty,
-                "Allocatable Pending Amount": allocatable_pending_amount,
                 "Allocated Qty.": 0,
-                "Allocated Amount": 0,
                 "Balance Pending Qty.": 0,
-                "Balance Pending Amount": 0,
                 "Current Stock": 0,
                 "Open Allocation Qty": 0,
                 "Usable Stock Before": 0,
@@ -1291,11 +1276,12 @@ def run_allocation(pending_df, stock_df):
             alloc = min(usable, remaining)
 
             if alloc > 0:
+                pending_qty_before_allocation = remaining
+                pending_amount_before_allocation = pending_qty_before_allocation * pending_unit_amount
+
                 allocated_anything = True
                 stock_df.loc[idx, "usable_stock"] = usable - alloc
                 remaining -= alloc
-                allocated_amount = alloc * pending_unit_amount
-                balance_pending_amount = max(remaining * pending_unit_amount, 0)
 
                 result.append({
                     "PO No.": po,
@@ -1306,17 +1292,10 @@ def run_allocation(pending_df, stock_df):
                     "RR Warehouse": rr,
                     "FK Warehouse": fk,
                     "SAP Code": s["SAP Code"],
-                    "Pending Qty.": uploaded_pending_qty,
-                    "Total Pending Amount": pending_amount,
-                    "Pending Amount": allocated_amount,
-                    "Already Allocated Qty.": already_allocated_qty,
-                    "Already Allocated Amount": already_allocated_amount,
-                    "Allocatable Pending Qty.": pending_qty,
-                    "Allocatable Pending Amount": allocatable_pending_amount,
+                    "Pending Qty.": pending_qty_before_allocation,
+                    "Pending Amount": pending_amount_before_allocation,
                     "Allocated Qty.": alloc,
-                    "Allocated Amount": allocated_amount,
                     "Balance Pending Qty.": remaining,
-                    "Balance Pending Amount": balance_pending_amount,
                     "Current Stock": s["Stock"],
                     "Open Allocation Qty": s["open_alloc_qty"],
                     "Usable Stock Before": usable,
@@ -1334,17 +1313,10 @@ def run_allocation(pending_df, stock_df):
                 "RR Warehouse": rr,
                 "FK Warehouse": fk,
                 "SAP Code": "",
-                "Pending Qty.": uploaded_pending_qty,
-                "Total Pending Amount": pending_amount,
-                "Pending Amount": allocatable_pending_amount,
-                "Already Allocated Qty.": already_allocated_qty,
-                "Already Allocated Amount": already_allocated_amount,
-                "Allocatable Pending Qty.": pending_qty,
-                "Allocatable Pending Amount": allocatable_pending_amount,
+                "Pending Qty.": pending_qty,
+                "Pending Amount": pending_qty * pending_unit_amount,
                 "Allocated Qty.": 0,
-                "Allocated Amount": 0,
                 "Balance Pending Qty.": remaining,
-                "Balance Pending Amount": allocatable_pending_amount,
                 "Current Stock": 0,
                 "Open Allocation Qty": 0,
                 "Usable Stock Before": 0,
