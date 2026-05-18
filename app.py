@@ -923,6 +923,10 @@ def apply_sap_sales_invoice_upload(sales_df):
     tracker_df["balance_to_bill"] = (
         tracker_df["allocated_qty"] - tracker_df["billed_qty"]
     ).apply(lambda x: max(x, 0))
+    tracker_df["sent_date_for_match"] = pd.to_datetime(
+        tracker_df["sent_date"],
+        errors="coerce"
+    ).dt.date
 
     updated_rows = 0
     matched_qty = 0
@@ -930,6 +934,19 @@ def apply_sap_sales_invoice_upload(sales_df):
 
     for _, sales_row in sales_df.iterrows():
         remaining_qty = clean_number(sales_row["Dispatch Qty"])
+        invoice_date = pd.to_datetime(
+            sales_row["Invoice Date"],
+            errors="coerce"
+        )
+
+        if pd.isna(invoice_date):
+            unmatched_record = sales_row.to_dict()
+            unmatched_record["Unmatched Qty"] = remaining_qty
+            unmatched_record["Reason"] = "Invalid invoice date"
+            unmatched_records.append(unmatched_record)
+            continue
+
+        invoice_date = invoice_date.date()
 
         match_mask = (
             (tracker_df["po_no"] == clean_text(sales_row["PO No"])) &
@@ -938,6 +955,8 @@ def apply_sap_sales_invoice_upload(sales_df):
             (tracker_df["rr_warehouse"] == clean_text(sales_row["Site"]).upper()) &
             (tracker_df["fsn"] == clean_text(sales_row["FSN"])) &
             (tracker_df["sap_code"] == clean_text(sales_row["Item"])) &
+            (tracker_df["sent_date_for_match"].notna()) &
+            (tracker_df["sent_date_for_match"] <= invoice_date) &
             (tracker_df["balance_to_bill"] > 0)
         )
 
@@ -975,11 +994,11 @@ def apply_sap_sales_invoice_upload(sales_df):
                     billing_source = :billing_source
                 WHERE id = :id
             """, {
-                "sent_date": str(sales_row["Invoice Date"]),
+                "sent_date": str(tracker_df.loc[tracker_idx, "sent_date_for_match"]),
                 "billed_qty": new_billed_qty,
                 "balance_to_bill": new_balance,
                 "billing_done": billing_done,
-                "billing_date": str(sales_row["Invoice Date"]),
+                "billing_date": str(invoice_date),
                 "invoice_no": invoice_no,
                 "billing_source": "SAP Sales Upload",
                 "id": int(tracker_row["id"])
@@ -996,6 +1015,9 @@ def apply_sap_sales_invoice_upload(sales_df):
         if remaining_qty > 0:
             unmatched_record = sales_row.to_dict()
             unmatched_record["Unmatched Qty"] = remaining_qty
+            unmatched_record["Reason"] = (
+                "No open tracker row found with matching keys and Sent Date on/before Invoice Date"
+            )
             unmatched_records.append(unmatched_record)
 
     unmatched_df = pd.DataFrame(unmatched_records)
