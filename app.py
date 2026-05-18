@@ -1239,6 +1239,7 @@ def run_allocation(pending_df, stock_df):
 
         remaining = pending_qty
         allocated_anything = False
+        pending_shown_for_demand = False
 
         if pending_qty <= 0:
             result.append({
@@ -1276,9 +1277,11 @@ def run_allocation(pending_df, stock_df):
             alloc = min(usable, remaining)
 
             if alloc > 0:
-                row_pending_amount = alloc * pending_unit_amount
+                row_pending_qty = pending_qty if not pending_shown_for_demand else 0
+                row_pending_amount = pending_qty * pending_unit_amount if not pending_shown_for_demand else 0
 
                 allocated_anything = True
+                pending_shown_for_demand = True
                 stock_df.loc[idx, "usable_stock"] = usable - alloc
                 remaining -= alloc
 
@@ -1291,7 +1294,7 @@ def run_allocation(pending_df, stock_df):
                     "RR Warehouse": rr,
                     "FK Warehouse": fk,
                     "SAP Code": s["SAP Code"],
-                    "Pending Qty.": alloc,
+                    "Pending Qty.": row_pending_qty,
                     "Pending Amount": row_pending_amount,
                     "Allocated Qty.": alloc,
                     "Balance Pending Qty.": remaining,
