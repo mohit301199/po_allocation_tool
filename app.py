@@ -782,6 +782,259 @@ def get_sent_for_billing_download_df(tracker_df):
     })
 
 
+def get_billing_update_template_df(tracker_df):
+    if tracker_df.empty:
+        return pd.DataFrame()
+
+    template_df = tracker_df.copy()
+
+    export_columns = [
+        "id",
+        "po_no",
+        "order_id",
+        "buyer_code",
+        "fsn",
+        "title",
+        "rr_warehouse",
+        "fk_warehouse",
+        "sap_code",
+        "allocated_qty",
+        "sent_date",
+        "billed_qty",
+        "balance_to_bill",
+        "invoice_no",
+        "billing_date",
+        "billing_done",
+        "remark",
+    ]
+
+    export_columns = [col for col in export_columns if col in template_df.columns]
+    template_df = template_df[export_columns]
+
+    template_df = template_df.rename(columns={
+        "id": "Tracker ID",
+        "po_no": "PO No.",
+        "order_id": "Order ID",
+        "buyer_code": "Buyer Code",
+        "fsn": "FSN",
+        "title": "Title",
+        "rr_warehouse": "RR Warehouse",
+        "fk_warehouse": "FK Warehouse",
+        "sap_code": "SAP Code",
+        "allocated_qty": "Allocated Qty.",
+        "sent_date": "Sent Date (YYYY-MM-DD)",
+        "billed_qty": "Billed Qty.",
+        "balance_to_bill": "Balance To Bill",
+        "invoice_no": "Invoice No.",
+        "billing_date": "Billing Date (YYYY-MM-DD)",
+        "billing_done": "Billing Done (Yes/No)",
+        "remark": "Remark",
+    })
+
+    for col in ["Sent Date (YYYY-MM-DD)", "Billing Date (YYYY-MM-DD)"]:
+        if col in template_df.columns:
+            template_df[col] = pd.to_datetime(
+                template_df[col],
+                errors="coerce"
+            ).dt.strftime("%Y-%m-%d").fillna("")
+
+    return template_df
+
+
+def normalize_yes_no(value):
+    text_value = clean_text(value).lower()
+
+    if text_value in ["yes", "y", "true", "1", "done", "billed"]:
+        return "Yes"
+
+    if text_value in ["no", "n", "false", "0", "not done", "pending", ""]:
+        return "No"
+
+    return ""
+
+
+def parse_upload_date(value):
+    value = clean_text(value)
+
+    if value == "":
+        return "", ""
+
+    parsed_date = pd.to_datetime(
+        value,
+        errors="coerce",
+        dayfirst=False
+    )
+
+    if pd.isna(parsed_date):
+        return "", f"Invalid date '{value}'. Use YYYY-MM-DD."
+
+    return parsed_date.strftime("%Y-%m-%d"), ""
+
+
+def apply_billing_update_upload(uploaded_df):
+    update_df = normalize_columns(uploaded_df)
+
+    column_aliases = {
+        "Tracker ID": ["Tracker ID", "ID", "id"],
+        "Invoice No.": ["Invoice No.", "Invoice No", "Invoice Number", "invoice_no"],
+        "Billing Date (YYYY-MM-DD)": ["Billing Date (YYYY-MM-DD)", "Billing Date", "billing_date"],
+        "Billed Qty.": ["Billed Qty.", "Billed Qty", "Billing Qty", "billed_qty"],
+        "Billing Done (Yes/No)": ["Billing Done (Yes/No)", "Billing Done", "billing_done"],
+        "Remark": ["Remark", "Remarks", "remark"],
+    }
+
+    rename_map = {}
+
+    for target_col, aliases in column_aliases.items():
+        found_col = first_existing_column(update_df, aliases)
+        if found_col:
+            rename_map[found_col] = target_col
+
+    update_df = update_df.rename(columns=rename_map)
+
+    required_cols = ["Tracker ID"]
+    missing_cols = [col for col in required_cols if col not in update_df.columns]
+
+    if missing_cols:
+        return {
+            "updated_rows": 0,
+            "error_rows": pd.DataFrame([{
+                "Error": f"Missing required columns: {missing_cols}"
+            }])
+        }
+
+    for col in column_aliases:
+        if col not in update_df.columns:
+            update_df[col] = ""
+
+    tracker_df = get_tracker_df()
+
+    if tracker_df.empty:
+        return {
+            "updated_rows": 0,
+            "error_rows": pd.DataFrame([{"Error": "No tracker rows found."}])
+        }
+
+    tracker_by_id = {
+        int(row["id"]): row
+        for _, row in tracker_df.iterrows()
+    }
+
+    updated_rows = 0
+    error_rows = []
+
+    for row_no, row in update_df.iterrows():
+        try:
+            tracker_id = int(clean_number(row["Tracker ID"]))
+        except Exception:
+            error_rows.append({
+                "Excel Row": row_no + 2,
+                "Tracker ID": row.get("Tracker ID", ""),
+                "Error": "Invalid Tracker ID"
+            })
+            continue
+
+        if tracker_id not in tracker_by_id:
+            error_rows.append({
+                "Excel Row": row_no + 2,
+                "Tracker ID": tracker_id,
+                "Error": "Tracker ID not found"
+            })
+            continue
+
+        tracker_row = tracker_by_id[tracker_id]
+        allocated_qty = clean_number(tracker_row.get("allocated_qty", 0))
+        billed_qty = clean_number(row["Billed Qty."])
+        billing_done = normalize_yes_no(row["Billing Done (Yes/No)"])
+        invoice_no = clean_text(row["Invoice No."])
+        remark = clean_text(row["Remark"])
+        billing_date, date_error = parse_upload_date(row["Billing Date (YYYY-MM-DD)"])
+
+        if date_error:
+            error_rows.append({
+                "Excel Row": row_no + 2,
+                "Tracker ID": tracker_id,
+                "Error": date_error
+            })
+            continue
+
+        if billing_done == "":
+            error_rows.append({
+                "Excel Row": row_no + 2,
+                "Tracker ID": tracker_id,
+                "Error": "Billing Done must be Yes or No"
+            })
+            continue
+
+        if billing_done == "Yes" and invoice_no == "":
+            error_rows.append({
+                "Excel Row": row_no + 2,
+                "Tracker ID": tracker_id,
+                "Error": "Invoice No. is required when Billing Done is Yes"
+            })
+            continue
+
+        if billing_done == "Yes" and billing_date == "":
+            error_rows.append({
+                "Excel Row": row_no + 2,
+                "Tracker ID": tracker_id,
+                "Error": "Billing Date is required when Billing Done is Yes"
+            })
+            continue
+
+        if billing_done == "Yes" and billed_qty <= 0:
+            billed_qty = allocated_qty
+
+        billed_qty = min(billed_qty, allocated_qty)
+        balance_to_bill = max(allocated_qty - billed_qty, 0)
+
+        if billed_qty > 0 and billing_done == "No" and balance_to_bill <= 0:
+            billing_done = "Yes"
+
+        update_fields = {
+            "invoice_no": invoice_no,
+            "billing_date": billing_date,
+            "billing_done": billing_done,
+            "remark": remark,
+            "id": tracker_id,
+        }
+
+        if "billed_qty" in tracker_df.columns and "balance_to_bill" in tracker_df.columns:
+            db_execute("""
+            UPDATE allocation_tracker
+            SET
+                invoice_no = :invoice_no,
+                billing_date = :billing_date,
+                billing_done = :billing_done,
+                billed_qty = :billed_qty,
+                balance_to_bill = :balance_to_bill,
+                remark = :remark
+            WHERE id = :id
+            """, {
+                **update_fields,
+                "billed_qty": billed_qty,
+                "balance_to_bill": balance_to_bill,
+            })
+
+        else:
+            db_execute("""
+            UPDATE allocation_tracker
+            SET
+                invoice_no = :invoice_no,
+                billing_date = :billing_date,
+                billing_done = :billing_done,
+                remark = :remark
+            WHERE id = :id
+            """, update_fields)
+
+        updated_rows += 1
+
+    return {
+        "updated_rows": updated_rows,
+        "error_rows": pd.DataFrame(error_rows)
+    }
+
+
 # =====================================================
 # FSN BARCODE GENERATION
 # =====================================================
@@ -1778,6 +2031,65 @@ elif menu == "Allocation Tracker":
                 file_name="sent_for_billing_rows.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+
+        st.markdown("---")
+        st.subheader("Billing Update Upload")
+        st.caption(
+            "Download this Excel, fill Invoice No., Billing Date as YYYY-MM-DD, "
+            "Billed Qty., Billing Done as Yes/No, and upload it back. Tracker ID must not be changed."
+        )
+
+        billing_update_template = get_billing_update_template_df(tracker)
+
+        st.download_button(
+            "Download Billing Update Template",
+            data=to_excel(billing_update_template),
+            file_name="billing_update_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        billing_update_file = st.file_uploader(
+            "Upload Completed Billing Update File",
+            type=["xlsx"],
+            key="billing_update_file"
+        )
+
+        if billing_update_file is not None:
+            uploaded_df, read_error = read_uploaded_excel(
+                billing_update_file,
+                "Billing Update file"
+            )
+
+            if read_error:
+                st.error(read_error)
+
+            else:
+                st.write(f"Rows in uploaded file: {len(uploaded_df):,}")
+                st.dataframe(uploaded_df.head(25), use_container_width=True)
+
+                if st.button("Apply Billing Update Upload"):
+                    update_result = apply_billing_update_upload(uploaded_df)
+
+                    if not update_result["error_rows"].empty:
+                        st.warning(
+                            f"{len(update_result['error_rows'])} rows could not be updated. "
+                            "Please fix them and upload again."
+                        )
+                        st.dataframe(update_result["error_rows"], use_container_width=True)
+                        st.download_button(
+                            "Download Billing Update Errors",
+                            data=to_excel(update_result["error_rows"]),
+                            file_name="billing_update_errors.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+
+                    if update_result["updated_rows"] > 0:
+                        log_activity(
+                            "billing_update_upload",
+                            f"{update_result['updated_rows']} tracker rows updated from upload"
+                        )
+                        st.success(f"{update_result['updated_rows']} tracker rows updated successfully")
+                        st.rerun()
 
         editable_tracker = tracker.copy()
 
