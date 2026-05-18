@@ -801,9 +801,7 @@ def generate_fsn_barcode_bytes(fsn):
             "module_width": 0.32,
             "module_height": 18,
             "quiet_zone": 3,
-            "font_size": 9,
-            "text_distance": 3,
-            "write_text": True,
+            "write_text": False,
             "dpi": 300,
         }
     )
