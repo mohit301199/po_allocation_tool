@@ -181,7 +181,13 @@ def get_engine():
         )
         st.stop()
 
-    return create_engine(st.secrets["DATABASE_URL"], pool_pre_ping=True)
+    return create_engine(
+        st.secrets["DATABASE_URL"],
+        pool_pre_ping=True,
+        pool_recycle=1800,
+        pool_size=5,
+        max_overflow=5,
+    )
 
 
 engine = get_engine()
@@ -218,6 +224,38 @@ def db_execute(query, params=None, clear_cache=True):
 
     if clear_cache:
         st.cache_data.clear()
+
+
+def ensure_performance_indexes():
+    index_queries = [
+        """
+        CREATE INDEX IF NOT EXISTS idx_allocation_tracker_sent_billing
+        ON allocation_tracker (sent_for_billing, billing_done)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_allocation_tracker_fsn_rr_sap
+        ON allocation_tracker (fsn, rr_warehouse, sap_code)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_allocation_tracker_po_fsn_rr_fk
+        ON allocation_tracker (po_no, fsn, rr_warehouse, fk_warehouse)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_allocation_tracker_id
+        ON allocation_tracker (id)
+        """,
+    ]
+
+    for query in index_queries:
+        db_execute(query, clear_cache=False)
+
+
+if "performance_indexes_checked" not in st.session_state:
+    try:
+        ensure_performance_indexes()
+    except Exception:
+        pass
+    st.session_state.performance_indexes_checked = True
 
 
 # =====================================================
@@ -1040,6 +1078,7 @@ def apply_billing_update_upload(uploaded_df):
 # =====================================================
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def generate_fsn_barcode_bytes(fsn):
     fsn = clean_text(fsn)
 
@@ -1075,6 +1114,7 @@ def get_fsn_barcode_bytes(fsn, barcode_cache):
     return barcode_cache[fsn]
 
 
+@st.cache_data(ttl=300, show_spinner=False)
 def to_excel(df):
     output = BytesIO()
 
@@ -1148,11 +1188,13 @@ def prepare_direct_billing_df(uploaded_df):
 # BILLING SUMMARY WITH EXACT BARCODES
 # =====================================================
 
-def to_excel_billing_with_exact_barcodes(billing_df, fsn_barcode_cache):
+@st.cache_data(ttl=300, show_spinner=False)
+def to_excel_billing_with_exact_barcodes(billing_df):
     output = BytesIO()
     wb = Workbook()
     ws = wb.active
     ws.title = "Billing Summary"
+    fsn_barcode_cache = {}
 
     headers = [
         "Invoice No.",
@@ -1259,8 +1301,10 @@ def to_excel_billing_with_exact_barcodes(billing_df, fsn_barcode_cache):
 # STICKER PDF GENERATOR
 # =====================================================
 
-def generate_sticker_pdf(billing_df, fsn_barcode_cache):
+@st.cache_data(ttl=300, show_spinner=False)
+def generate_sticker_pdf(billing_df):
     pdf_buffer = BytesIO()
+    fsn_barcode_cache = {}
 
     doc = SimpleDocTemplate(
         pdf_buffer,
@@ -1831,7 +1875,9 @@ if menu == "Dashboard Summary":
 
         st.markdown("---")
         st.subheader("Recent Allocation Records")
-        st.dataframe(tracker, use_container_width=True)
+        recent_tracker = tracker.head(500)
+        st.caption(f"Showing latest {len(recent_tracker):,} of {len(tracker):,} records.")
+        st.dataframe(recent_tracker, use_container_width=True)
     else:
         st.info("No allocation records yet.")
 
@@ -2091,7 +2137,21 @@ elif menu == "Allocation Tracker":
                         st.success(f"{update_result['updated_rows']} tracker rows updated successfully")
                         st.rerun()
 
-        editable_tracker = tracker.copy()
+        if len(tracker) > 500:
+            show_all_tracker_rows = st.checkbox(
+                "Show all tracker rows in editable table (slower)",
+                value=False
+            )
+
+            editable_source_df = tracker if show_all_tracker_rows else tracker.head(500)
+            st.caption(
+                f"Editable table showing {len(editable_source_df):,} of {len(tracker):,} rows."
+            )
+
+        else:
+            editable_source_df = tracker
+
+        editable_tracker = editable_source_df.copy()
 
         editable_tracker["sent_for_billing"] = editable_tracker["sent_for_billing"].fillna("No")
         editable_tracker["billing_done"] = editable_tracker["billing_done"].fillna("No")
@@ -2426,10 +2486,7 @@ elif menu == "Billing Summary":
                 with q1:
                     st.download_button(
                         "Download Direct Barcode Excel",
-                        data=to_excel_billing_with_exact_barcodes(
-                            direct_billing_df,
-                            fsn_barcode_cache
-                        ),
+                        data=to_excel_billing_with_exact_barcodes(direct_billing_df),
                         file_name="direct_billing_barcode_sheet.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
@@ -2437,10 +2494,7 @@ elif menu == "Billing Summary":
                 with q2:
                     st.download_button(
                         "Download Direct Sticker PDF",
-                        data=generate_sticker_pdf(
-                            direct_billing_df,
-                            fsn_barcode_cache
-                        ),
+                        data=generate_sticker_pdf(direct_billing_df),
                         file_name="direct_warehouse_sticker_sheet.pdf",
                         mime="application/pdf"
                     )
@@ -2537,20 +2591,14 @@ elif menu == "Billing Summary":
 
         st.download_button(
             "Download Billing Summary With Exact Barcode",
-            data=to_excel_billing_with_exact_barcodes(
-                billing_df,
-                fsn_barcode_cache
-            ),
+            data=to_excel_billing_with_exact_barcodes(billing_df),
             file_name="billing_summary_with_exact_barcode.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
         st.download_button(
             "Download Warehouse Sticker Sheet PDF",
-            data=generate_sticker_pdf(
-                billing_df,
-                fsn_barcode_cache
-            ),
+            data=generate_sticker_pdf(billing_df),
             file_name="warehouse_sticker_sheet.pdf",
             mime="application/pdf"
         )
