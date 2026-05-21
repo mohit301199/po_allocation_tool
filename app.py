@@ -272,7 +272,7 @@ def ensure_performance_indexes():
         """,
         """
         CREATE INDEX IF NOT EXISTS idx_appointment_tracker_match
-        ON appointment_tracker (fsn, rr_warehouse, fk_warehouse, po_no, appointment_date)
+        ON appointment_tracker (fsn, fk_warehouse, po_no, appointment_date)
         """,
     ]
 
@@ -777,18 +777,16 @@ def get_appointment_df():
             SELECT
                 appointment_no,
                 fsn,
-                rr_warehouse,
                 fk_warehouse,
                 po_no,
                 SUM(allocated_qty) AS used_qty
             FROM allocation_tracker
             WHERE appointment_no IS NOT NULL
             AND TRIM(appointment_no) <> ''
-            GROUP BY appointment_no, fsn, rr_warehouse, fk_warehouse, po_no
+            GROUP BY appointment_no, fsn, fk_warehouse, po_no
         ) used
         ON COALESCE(a.appointment_no, '') = COALESCE(used.appointment_no, '')
         AND COALESCE(a.fsn, '') = COALESCE(used.fsn, '')
-        AND COALESCE(a.rr_warehouse, '') = COALESCE(used.rr_warehouse, '')
         AND COALESCE(a.fk_warehouse, '') = COALESCE(used.fk_warehouse, '')
         AND COALESCE(a.po_no, '') = COALESCE(used.po_no, '')
         WHERE GREATEST(a.appointment_qty - COALESCE(used.used_qty, 0), 0) > 0
@@ -813,8 +811,7 @@ def find_appointment_matches(appointment_df, po, fsn, rr, fk):
 
     mask = (
         (appt_df["fsn"] == fsn) &
-        (appt_df["rr_warehouse"] == rr) &
-        ((appt_df["fk_warehouse"] == "") | (appt_df["fk_warehouse"] == fk)) &
+        (appt_df["fk_warehouse"] == fk) &
         ((appt_df["po_no"] == "") | (appt_df["po_no"] == po)) &
         (appt_df["appointment_balance_qty"].apply(clean_number) > 0)
     )
@@ -1228,7 +1225,6 @@ def prepare_appointment_upload(uploaded_df):
         "Appointment Date": ["Appointment Date", "Delivery Date"],
         "PO No.": ["PO No.", "PO No", "PONo", "PO"],
         "FSN": ["FSN"],
-        "RR Warehouse": ["RR Warehouse", "Site", "Site Id"],
         "FK Warehouse": ["FK Warehouse", "FK FC"],
         "Appointment Qty.": ["Appointment Qty.", "Appointment Qty", "Qty", "Quantity"],
         "Remark": ["Remark", "Remarks"],
@@ -1242,20 +1238,20 @@ def prepare_appointment_upload(uploaded_df):
             rename_map[found_col] = target_col
 
     upload_df = upload_df.rename(columns=rename_map)
-    required_cols = ["Appointment No.", "Appointment Date", "FSN", "RR Warehouse", "Appointment Qty."]
+    required_cols = ["Appointment No.", "Appointment Date", "FSN", "FK Warehouse", "Appointment Qty."]
     missing_cols = [col for col in required_cols if col not in upload_df.columns]
 
     if missing_cols:
         return pd.DataFrame(), missing_cols
 
-    for col in ["PO No.", "FK Warehouse", "Remark"]:
+    for col in ["PO No.", "Remark"]:
         if col not in upload_df.columns:
             upload_df[col] = ""
 
-    for col in ["Appointment No.", "PO No.", "FSN", "RR Warehouse", "FK Warehouse", "Remark"]:
+    for col in ["Appointment No.", "PO No.", "FSN", "FK Warehouse", "Remark"]:
         upload_df[col] = upload_df[col].apply(clean_text)
 
-    upload_df["RR Warehouse"] = upload_df["RR Warehouse"].str.upper()
+    upload_df["FK Warehouse"] = upload_df["FK Warehouse"].str.upper()
     upload_df["Appointment Qty."] = upload_df["Appointment Qty."].apply(clean_number)
     upload_df["Appointment Date"] = upload_df["Appointment Date"].apply(
         lambda value: parse_upload_date(value)[0]
@@ -1265,7 +1261,7 @@ def prepare_appointment_upload(uploaded_df):
         (upload_df["Appointment No."] != "") &
         (upload_df["Appointment Date"] != "") &
         (upload_df["FSN"] != "") &
-        (upload_df["RR Warehouse"] != "") &
+        (upload_df["FK Warehouse"] != "") &
         (upload_df["Appointment Qty."] > 0)
     ]
 
@@ -1275,7 +1271,6 @@ def prepare_appointment_upload(uploaded_df):
             "Appointment Date",
             "PO No.",
             "FSN",
-            "RR Warehouse",
             "FK Warehouse",
             "Appointment Qty.",
             "Remark",
@@ -1292,7 +1287,7 @@ def save_appointment_upload(appointment_df):
             "appointment_date": row["Appointment Date"],
             "po_no": row["PO No."],
             "fsn": row["FSN"],
-            "rr_warehouse": row["RR Warehouse"],
+            "rr_warehouse": "",
             "fk_warehouse": row["FK Warehouse"],
             "appointment_qty": clean_number(row["Appointment Qty."]),
             "remark": row["Remark"],
@@ -1303,7 +1298,6 @@ def save_appointment_upload(appointment_df):
         DELETE FROM appointment_tracker
         WHERE appointment_no = :appointment_no
         AND fsn = :fsn
-        AND rr_warehouse = :rr_warehouse
         AND COALESCE(fk_warehouse, '') = COALESCE(:fk_warehouse, '')
         AND COALESCE(po_no, '') = COALESCE(:po_no, '')
         """, params)
@@ -2482,7 +2476,7 @@ elif menu == "Upload & Allocate":
     st.subheader("Appointment Upload")
     st.caption(
         "Upload Flipkart appointment quantity before running allocation. "
-        "When an appointment exists for FSN/warehouse, allocation is capped by appointment balance."
+        "When an appointment exists for FSN/FK warehouse, allocation is capped by appointment balance."
     )
 
     appointment_sample = pd.DataFrame({
@@ -2490,7 +2484,6 @@ elif menu == "Upload & Allocate":
         "Appointment Date": ["2026-05-25"],
         "PO No.": ["PO123"],
         "FSN": ["FSN001"],
-        "RR Warehouse": ["WH1"],
         "FK Warehouse": ["FK1"],
         "Appointment Qty.": [50],
         "Remark": ["Scheduled delivery appointment"],
@@ -2544,7 +2537,11 @@ elif menu == "Upload & Allocate":
 
     if not active_appointments.empty:
         with st.expander("Active appointment balance"):
-            st.dataframe(active_appointments, use_container_width=True)
+            appointment_display = active_appointments.drop(
+                columns=["rr_warehouse"],
+                errors="ignore"
+            )
+            st.dataframe(appointment_display, use_container_width=True)
 
     st.markdown("---")
     st.subheader("Upload Files")
