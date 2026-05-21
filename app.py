@@ -237,6 +237,10 @@ def ensure_performance_indexes():
         ADD COLUMN IF NOT EXISTS appointment_date TEXT
         """,
         """
+        ALTER TABLE allocation_tracker
+        ADD COLUMN IF NOT EXISTS fcn TEXT
+        """,
+        """
         CREATE INDEX IF NOT EXISTS idx_allocation_tracker_sent_billing
         ON allocation_tracker (sent_for_billing, billing_done)
         """,
@@ -877,6 +881,7 @@ def get_sent_for_billing_download_df(tracker_df):
         "rr_warehouse",
         "fk_warehouse",
         "sap_code",
+        "fcn",
         "appointment_no",
         "appointment_date",
         "pending_amount",
@@ -903,6 +908,7 @@ def get_sent_for_billing_download_df(tracker_df):
         "rr_warehouse": "RR Warehouse",
         "fk_warehouse": "FK Warehouse",
         "sap_code": "SAP Code",
+        "fcn": "FCN",
         "appointment_no": "Appointment No.",
         "appointment_date": "Appointment Date",
         "pending_amount": "Pending Amount",
@@ -932,6 +938,7 @@ def get_billing_update_template_df(tracker_df):
         "rr_warehouse",
         "fk_warehouse",
         "sap_code",
+        "fcn",
         "appointment_no",
         "appointment_date",
         "allocated_qty",
@@ -958,6 +965,7 @@ def get_billing_update_template_df(tracker_df):
         "rr_warehouse": "RR Warehouse",
         "fk_warehouse": "FK Warehouse",
         "sap_code": "SAP Code",
+        "fcn": "FCN",
         "appointment_no": "Appointment No.",
         "appointment_date": "Appointment Date",
         "allocated_qty": "Allocated Qty.",
@@ -971,7 +979,7 @@ def get_billing_update_template_df(tracker_df):
         "remark": "Remark",
     })
 
-    for col in ["Sent Date (YYYY-MM-DD)", "Billing Date (YYYY-MM-DD)"]:
+    for col in ["Sent Date (YYYY-MM-DD)", "Appointment Date", "Billing Date (YYYY-MM-DD)"]:
         if col in template_df.columns:
             template_df[col] = pd.to_datetime(
                 template_df[col],
@@ -1016,6 +1024,8 @@ def apply_billing_update_upload(uploaded_df):
 
     column_aliases = {
         "Tracker ID": ["Tracker ID", "ID", "id"],
+        "FCN": ["FCN", "fcn"],
+        "Appointment Date": ["Appointment Date", "Appointment Date (YYYY-MM-DD)", "appointment_date"],
         "Invoice No.": ["Invoice No.", "Invoice No", "Invoice Number", "invoice_no"],
         "Billing Date (YYYY-MM-DD)": ["Billing Date (YYYY-MM-DD)", "Billing Date", "billing_date"],
         "Billed Qty.": ["Billed Qty.", "Billed Qty", "Billing Qty", "billed_qty"],
@@ -1086,12 +1096,22 @@ def apply_billing_update_upload(uploaded_df):
 
         tracker_row = tracker_by_id[tracker_id]
         allocated_qty = clean_number(tracker_row.get("allocated_qty", 0))
+        fcn = clean_text(row["FCN"])
+        appointment_date, appointment_date_error = parse_upload_date(row["Appointment Date"])
         billed_qty = clean_number(row["Billed Qty."])
         sent_for_billing = normalize_yes_no(row["Sent For Billing (Yes/No)"])
         billing_done = normalize_yes_no(row["Billing Done (Yes/No)"])
         invoice_no = clean_text(row["Invoice No."])
         remark = clean_text(row["Remark"])
         billing_date, date_error = parse_upload_date(row["Billing Date (YYYY-MM-DD)"])
+
+        if appointment_date_error:
+            error_rows.append({
+                "Excel Row": row_no + 2,
+                "Tracker ID": tracker_id,
+                "Error": appointment_date_error
+            })
+            continue
 
         if date_error:
             error_rows.append({
@@ -1147,6 +1167,8 @@ def apply_billing_update_upload(uploaded_df):
 
         update_fields = {
             "sent_for_billing": sent_for_billing,
+            "fcn": fcn,
+            "appointment_date": appointment_date,
             "invoice_no": invoice_no,
             "billing_date": billing_date,
             "billing_done": billing_done,
@@ -1159,6 +1181,8 @@ def apply_billing_update_upload(uploaded_df):
             UPDATE allocation_tracker
             SET
                 sent_for_billing = :sent_for_billing,
+                fcn = :fcn,
+                appointment_date = :appointment_date,
                 invoice_no = :invoice_no,
                 billing_date = :billing_date,
                 billing_done = :billing_done,
@@ -1177,6 +1201,8 @@ def apply_billing_update_upload(uploaded_df):
             UPDATE allocation_tracker
             SET
                 sent_for_billing = :sent_for_billing,
+                fcn = :fcn,
+                appointment_date = :appointment_date,
                 invoice_no = :invoice_no,
                 billing_date = :billing_date,
                 billing_done = :billing_done,
@@ -2863,6 +2889,7 @@ elif menu == "Allocation Tracker":
             "rr_warehouse",
             "fk_warehouse",
             "sap_code",
+            "fcn",
             "appointment_no",
             "appointment_date",
             "pending_amount",
@@ -3010,6 +3037,7 @@ elif menu == "Allocation Tracker":
                 "rr_warehouse": st.column_config.TextColumn("RR Warehouse", disabled=True),
                 "fk_warehouse": st.column_config.TextColumn("FK Warehouse", disabled=True),
                 "sap_code": st.column_config.TextColumn("SAP Code", disabled=True),
+                "fcn": st.column_config.TextColumn("FCN", disabled=True),
                 "appointment_no": st.column_config.TextColumn("Appointment No.", disabled=True),
                 "appointment_date": st.column_config.TextColumn("Appointment Date", disabled=True),
                 "pending_amount": st.column_config.NumberColumn("Pending Amount", disabled=True),
