@@ -1287,7 +1287,6 @@ def save_appointment_upload(appointment_df):
             "appointment_date": row["Appointment Date"],
             "po_no": row["PO No."],
             "fsn": row["FSN"],
-            "rr_warehouse": "",
             "fk_warehouse": row["FK Warehouse"],
             "appointment_qty": clean_number(row["Appointment Qty."]),
             "remark": row["Remark"],
@@ -1309,7 +1308,6 @@ def save_appointment_upload(appointment_df):
             appointment_date,
             po_no,
             fsn,
-            rr_warehouse,
             fk_warehouse,
             appointment_qty,
             remark
@@ -1320,7 +1318,6 @@ def save_appointment_upload(appointment_df):
             :appointment_date,
             :po_no,
             :fsn,
-            :rr_warehouse,
             :fk_warehouse,
             :appointment_qty,
             :remark
