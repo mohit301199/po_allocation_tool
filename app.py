@@ -822,12 +822,20 @@ def find_appointment_matches(appointment_df, po, fsn, rr, fk):
 # BILLING SUMMARY
 # =========================
 
-def get_billing_summary():
+def get_billing_summary(tracker_ids=None):
     tracker_columns = get_allocation_tracker_columns()
     qty_expr = "COALESCE(billed_qty, allocated_qty)" if "billed_qty" in tracker_columns else "allocated_qty"
+    id_filter = ""
+
+    if tracker_ids:
+        clean_ids = [int(clean_number(tracker_id)) for tracker_id in tracker_ids if clean_number(tracker_id) > 0]
+
+        if clean_ids:
+            id_filter = f"AND id IN ({', '.join(map(str, clean_ids))})"
 
     query = f"""
     SELECT
+        id,
         invoice_no,
         po_no,
         fsn,
@@ -840,6 +848,7 @@ def get_billing_summary():
     WHERE sent_for_billing = 'Yes'
     AND invoice_no IS NOT NULL
     AND TRIM(invoice_no) <> ''
+    {id_filter}
     ORDER BY invoice_no, po_no, fsn, sap_code
     """
 
@@ -926,6 +935,7 @@ def get_billing_update_template_df(tracker_df):
         "appointment_no",
         "appointment_date",
         "allocated_qty",
+        "sent_for_billing",
         "sent_date",
         "billed_qty",
         "balance_to_bill",
@@ -951,6 +961,7 @@ def get_billing_update_template_df(tracker_df):
         "appointment_no": "Appointment No.",
         "appointment_date": "Appointment Date",
         "allocated_qty": "Allocated Qty.",
+        "sent_for_billing": "Sent For Billing (Yes/No)",
         "sent_date": "Sent Date (YYYY-MM-DD)",
         "billed_qty": "Billed Qty.",
         "balance_to_bill": "Balance To Bill",
@@ -1008,6 +1019,7 @@ def apply_billing_update_upload(uploaded_df):
         "Invoice No.": ["Invoice No.", "Invoice No", "Invoice Number", "invoice_no"],
         "Billing Date (YYYY-MM-DD)": ["Billing Date (YYYY-MM-DD)", "Billing Date", "billing_date"],
         "Billed Qty.": ["Billed Qty.", "Billed Qty", "Billing Qty", "billed_qty"],
+        "Sent For Billing (Yes/No)": ["Sent For Billing (Yes/No)", "Sent For Billing", "sent_for_billing"],
         "Billing Done (Yes/No)": ["Billing Done (Yes/No)", "Billing Done", "billing_done"],
         "Remark": ["Remark", "Remarks", "remark"],
     }
@@ -1050,6 +1062,7 @@ def apply_billing_update_upload(uploaded_df):
     }
 
     updated_rows = 0
+    updated_ids = []
     error_rows = []
 
     for row_no, row in update_df.iterrows():
@@ -1074,6 +1087,7 @@ def apply_billing_update_upload(uploaded_df):
         tracker_row = tracker_by_id[tracker_id]
         allocated_qty = clean_number(tracker_row.get("allocated_qty", 0))
         billed_qty = clean_number(row["Billed Qty."])
+        sent_for_billing = normalize_yes_no(row["Sent For Billing (Yes/No)"])
         billing_done = normalize_yes_no(row["Billing Done (Yes/No)"])
         invoice_no = clean_text(row["Invoice No."])
         remark = clean_text(row["Remark"])
@@ -1092,6 +1106,14 @@ def apply_billing_update_upload(uploaded_df):
                 "Excel Row": row_no + 2,
                 "Tracker ID": tracker_id,
                 "Error": "Billing Done must be Yes or No"
+            })
+            continue
+
+        if sent_for_billing == "":
+            error_rows.append({
+                "Excel Row": row_no + 2,
+                "Tracker ID": tracker_id,
+                "Error": "Sent For Billing must be Yes or No"
             })
             continue
 
@@ -1114,6 +1136,9 @@ def apply_billing_update_upload(uploaded_df):
         if billing_done == "Yes" and billed_qty <= 0:
             billed_qty = allocated_qty
 
+        if billing_done == "Yes" or billed_qty > 0 or invoice_no != "":
+            sent_for_billing = "Yes"
+
         billed_qty = min(billed_qty, allocated_qty)
         balance_to_bill = max(allocated_qty - billed_qty, 0)
 
@@ -1121,6 +1146,7 @@ def apply_billing_update_upload(uploaded_df):
             billing_done = "Yes"
 
         update_fields = {
+            "sent_for_billing": sent_for_billing,
             "invoice_no": invoice_no,
             "billing_date": billing_date,
             "billing_done": billing_done,
@@ -1132,6 +1158,7 @@ def apply_billing_update_upload(uploaded_df):
             db_execute("""
             UPDATE allocation_tracker
             SET
+                sent_for_billing = :sent_for_billing,
                 invoice_no = :invoice_no,
                 billing_date = :billing_date,
                 billing_done = :billing_done,
@@ -1149,6 +1176,7 @@ def apply_billing_update_upload(uploaded_df):
             db_execute("""
             UPDATE allocation_tracker
             SET
+                sent_for_billing = :sent_for_billing,
                 invoice_no = :invoice_no,
                 billing_date = :billing_date,
                 billing_done = :billing_done,
@@ -1157,9 +1185,11 @@ def apply_billing_update_upload(uploaded_df):
             """, update_fields)
 
         updated_rows += 1
+        updated_ids.append(tracker_id)
 
     return {
         "updated_rows": updated_rows,
+        "updated_ids": updated_ids,
         "error_rows": pd.DataFrame(error_rows)
     }
 
@@ -2611,7 +2641,8 @@ elif menu == "Allocation Tracker":
         st.subheader("Billing Update Upload")
         st.caption(
             "Download this Excel, fill Invoice No., Billing Date as YYYY-MM-DD, "
-            "Billed Qty., Billing Done as Yes/No, and upload it back. Tracker ID must not be changed."
+            "Sent For Billing as Yes/No, Billed Qty., Billing Done as Yes/No, and upload it back. "
+            "Tracker ID must not be changed."
         )
 
         billing_update_template = get_billing_update_template_df(tracker)
@@ -2659,6 +2690,7 @@ elif menu == "Allocation Tracker":
                         )
 
                     if update_result["updated_rows"] > 0:
+                        st.session_state.latest_billing_update_ids = update_result["updated_ids"]
                         log_activity(
                             "billing_update_upload",
                             f"{update_result['updated_rows']} tracker rows updated from upload"
@@ -3136,15 +3168,42 @@ elif menu == "Billing Summary":
     st.markdown("---")
     st.markdown("### Tracker Billing Workflow")
 
-    billing_df = get_billing_summary()
+    latest_billing_update_ids = st.session_state.get("latest_billing_update_ids", [])
 
-    if billing_df.empty:
-        st.info(
-            "No rows found. Mark 'Sent for Billing' as Yes and enter Invoice No. in Allocation Tracker."
+    if latest_billing_update_ids:
+        billing_scope = st.radio(
+            "Billing Summary Scope",
+            ["Latest Billing Update Upload", "All Billed Tracker Rows"],
+            horizontal=True
         )
 
     else:
+        billing_scope = "All Billed Tracker Rows"
+
+    if billing_scope == "Latest Billing Update Upload":
+        billing_df = get_billing_summary(latest_billing_update_ids)
+        st.caption(
+            f"Showing rows from the latest billing update upload only "
+            f"({len(latest_billing_update_ids)} tracker rows updated)."
+        )
+
+    else:
+        billing_df = get_billing_summary()
+
+    if billing_df.empty:
+        if billing_scope == "Latest Billing Update Upload":
+            st.info(
+                "No invoice rows found in the latest billing update upload. "
+                "Check that Invoice No., Billing Date, and Billing Done are filled."
+            )
+        else:
+            st.info(
+                "No rows found. Mark 'Sent for Billing' as Yes and enter Invoice No. in Allocation Tracker."
+            )
+
+    else:
         billing_df = billing_df.rename(columns={
+            "id": "Tracker ID",
             "invoice_no": "Invoice No.",
             "po_no": "PO No.",
             "fsn": "FSN",
