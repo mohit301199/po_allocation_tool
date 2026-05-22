@@ -1341,7 +1341,7 @@ def verify_sales_billing_against_tracker(uploaded_df, tracker_df):
             return "Duplicate Tracker Key - Review Before Auto Update"
         if clean_number(row["qty_difference"]) == 0:
             return "Matched"
-        return "Qty Mismatch"
+        return "Ready To Update From Sales"
 
     compare_df["Verification Status"] = compare_df.apply(verification_status, axis=1)
 
@@ -1394,7 +1394,13 @@ def verify_sales_billing_against_tracker(uploaded_df, tracker_df):
             "Tracker Billed But Sales Not Found",
             "Sales Qty More Than Allocated",
             "Duplicate Tracker Key - Review Before Auto Update",
-            "Qty Mismatch",
+        ])
+    ].copy()
+
+    updateable_rows = comparison_output[
+        comparison_output["Verification Status"].isin([
+            "Matched",
+            "Ready To Update From Sales",
         ])
     ].copy()
 
@@ -1435,6 +1441,7 @@ def verify_sales_billing_against_tracker(uploaded_df, tracker_df):
         {"Metric": "Grouped sales billing keys", "Value": len(sales_grouped)},
         {"Metric": "Tracker rows checked", "Value": len(tracker_norm)},
         {"Metric": "Matched rows", "Value": len(matches)},
+        {"Metric": "Rows safe for sales update", "Value": len(updateable_rows)},
         {"Metric": "Exception rows", "Value": len(exceptions)},
         {"Metric": "Unmatched sales billing keys", "Value": len(unmatched_sales)},
         {"Metric": "Tracker billed qty total", "Value": tracker_norm["billed_qty"].sum()},
@@ -1444,8 +1451,77 @@ def verify_sales_billing_against_tracker(uploaded_df, tracker_df):
     return {
         "summary": summary,
         "matches": matches,
+        "updateable_rows": updateable_rows,
         "exceptions": exceptions,
         "unmatched_sales": unmatched_sales,
+    }
+
+
+def apply_sales_billing_update_upload(uploaded_df, tracker_df):
+    verification_result = verify_sales_billing_against_tracker(
+        uploaded_df,
+        tracker_df
+    )
+    updateable_rows = verification_result["updateable_rows"]
+
+    if updateable_rows.empty:
+        return {
+            **verification_result,
+            "updated_rows": 0,
+            "updated_ids": [],
+        }
+
+    tracker_columns = get_allocation_tracker_columns()
+    updated_rows = 0
+    updated_ids = []
+
+    for _, row in updateable_rows.iterrows():
+        tracker_id = int(clean_number(row["Tracker ID"]))
+        allocated_qty = clean_number(row["Allocated Qty."])
+        billed_qty = clean_number(row["Sales Billed Qty."])
+        balance_to_bill = max(allocated_qty - billed_qty, 0)
+        billing_done = "Yes" if balance_to_bill <= 0 and allocated_qty > 0 else "No"
+
+        params = {
+            "id": tracker_id,
+            "sent_for_billing": "Yes",
+            "invoice_no": clean_text(row["Sales Invoice No."]),
+            "billing_date": clean_text(row["Latest Sales Invoice Date"]),
+            "billing_done": billing_done,
+            "billed_qty": billed_qty,
+            "balance_to_bill": balance_to_bill,
+            "billing_source": "Sales Billing Upload",
+        }
+
+        update_fields = [
+            "sent_for_billing = :sent_for_billing",
+            "invoice_no = :invoice_no",
+            "billing_date = :billing_date",
+            "billing_done = :billing_done",
+        ]
+
+        if "billed_qty" in tracker_columns:
+            update_fields.append("billed_qty = :billed_qty")
+
+        if "balance_to_bill" in tracker_columns:
+            update_fields.append("balance_to_bill = :balance_to_bill")
+
+        if "billing_source" in tracker_columns:
+            update_fields.append("billing_source = :billing_source")
+
+        db_execute(f"""
+        UPDATE allocation_tracker
+        SET {", ".join(update_fields)}
+        WHERE id = :id
+        """, params)
+
+        updated_rows += 1
+        updated_ids.append(tracker_id)
+
+    return {
+        **verification_result,
+        "updated_rows": updated_rows,
+        "updated_ids": updated_ids,
     }
 
 
@@ -3502,10 +3578,10 @@ elif menu == "Allocation Tracker":
                         st.rerun()
 
         st.markdown("---")
-        st.subheader("Sales Billing Verification Upload")
+        st.subheader("Sales Billing Auto Update Upload")
         st.caption(
-            "Verification only. Upload the system sales file to compare invoice billing "
-            "against tracker billed qty. This does not update tracker data."
+            "Upload the system sales file to compare invoice billing against tracker billed qty. "
+            "Safe exact matches can be applied automatically after review."
         )
 
         sales_verification_file = st.file_uploader(
@@ -3553,6 +3629,54 @@ elif menu == "Allocation Tracker":
 
                 else:
                     st.success("No tracker billing exceptions found.")
+
+                if not verification_result["updateable_rows"].empty:
+                    st.markdown("#### Rows Safe For Auto Update")
+                    st.success(
+                        f"{len(verification_result['updateable_rows'])} rows can be updated from sales data."
+                    )
+                    st.dataframe(
+                        verification_result["updateable_rows"],
+                        use_container_width=True
+                    )
+                    st.download_button(
+                        "Download Rows Safe For Auto Update",
+                        data=to_excel(verification_result["updateable_rows"]),
+                        file_name="sales_billing_rows_safe_for_update.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+
+                    confirm_sales_update = st.checkbox(
+                        "I reviewed the sales verification and want to update safe tracker rows",
+                        key="confirm_sales_billing_auto_update"
+                    )
+
+                    if st.button("Apply Sales Billing Auto Update"):
+                        if not confirm_sales_update:
+                            st.error("Please confirm before applying sales billing updates.")
+
+                        else:
+                            sales_update_result = apply_sales_billing_update_upload(
+                                sales_uploaded_df,
+                                tracker
+                            )
+
+                            if sales_update_result["updated_rows"] > 0:
+                                st.session_state.latest_billing_update_ids = sales_update_result["updated_ids"]
+                                log_activity(
+                                    "sales_billing_upload",
+                                    f"{sales_update_result['updated_rows']} tracker rows updated from sales file"
+                                )
+                                st.success(
+                                    f"{sales_update_result['updated_rows']} tracker rows updated from sales file"
+                                )
+                                st.rerun()
+
+                            else:
+                                st.warning("No tracker rows were updated from this sales file.")
+
+                else:
+                    st.info("No rows are currently safe for automatic sales update.")
 
                 if not verification_result["unmatched_sales"].empty:
                     st.markdown("#### Sales Rows Not Found In Tracker")
