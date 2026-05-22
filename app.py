@@ -1517,6 +1517,320 @@ def apply_delete_allocation_upload(uploaded_df):
     return deleted_count, pd.DataFrame(errors)
 
 
+def get_tracker_correction_template_df(tracker_df):
+    template_df = tracker_df.copy()
+
+    export_columns = [
+        "id",
+        "allocation_date",
+        "po_no",
+        "order_id",
+        "buyer_code",
+        "fsn",
+        "title",
+        "rr_warehouse",
+        "fk_warehouse",
+        "sap_code",
+        "fcn",
+        "appointment_no",
+        "appointment_date",
+        "pending_amount",
+        "allocated_qty",
+        "billed_qty",
+        "balance_to_bill",
+        "sent_for_billing",
+        "sent_date",
+        "invoice_no",
+        "billing_date",
+        "billing_done",
+        "remark",
+    ]
+
+    export_columns = [col for col in export_columns if col in template_df.columns]
+    template_df = template_df[export_columns]
+
+    template_df.insert(0, "Action", "Replace")
+
+    template_df = template_df.rename(columns={
+        "id": "Tracker ID",
+        "allocation_date": "Allocation Date",
+        "po_no": "PO No.",
+        "order_id": "Order ID",
+        "buyer_code": "Buyer Code",
+        "fsn": "FSN",
+        "title": "Title",
+        "rr_warehouse": "RR Warehouse",
+        "fk_warehouse": "FK Warehouse",
+        "sap_code": "SAP Code",
+        "fcn": "FCN",
+        "appointment_no": "Appointment No.",
+        "appointment_date": "Appointment Date",
+        "pending_amount": "Pending Amount",
+        "allocated_qty": "Allocated Qty.",
+        "billed_qty": "Billed Qty.",
+        "balance_to_bill": "Remaining Qty.",
+        "sent_for_billing": "Sent For Billing (Yes/No)",
+        "sent_date": "Sent Date (YYYY-MM-DD)",
+        "invoice_no": "Invoice No.",
+        "billing_date": "Billing Date (YYYY-MM-DD)",
+        "billing_done": "Billing Done (Yes/No)",
+        "remark": "Remark",
+    })
+
+    for col in ["Allocation Date", "Appointment Date", "Sent Date (YYYY-MM-DD)", "Billing Date (YYYY-MM-DD)"]:
+        if col in template_df.columns:
+            template_df[col] = pd.to_datetime(
+                template_df[col],
+                errors="coerce"
+            ).dt.strftime("%Y-%m-%d").fillna("")
+
+    return template_df
+
+
+def apply_tracker_correction_upload(uploaded_df):
+    correction_df = normalize_columns(uploaded_df)
+
+    aliases = {
+        "Action": ["Action", "Correction Action", "Mode"],
+        "Tracker ID": ["Tracker ID", "ID", "id"],
+        "Allocation Date": ["Allocation Date", "allocation_date"],
+        "PO No.": ["PO No.", "PO No", "PONo", "po_no"],
+        "Order ID": ["Order ID", "Order Id", "order_id"],
+        "Buyer Code": ["Buyer Code", "buyer_code"],
+        "FSN": ["FSN", "fsn"],
+        "Title": ["Title", "Item Description", "title"],
+        "RR Warehouse": ["RR Warehouse", "RR WH", "Site", "rr_warehouse"],
+        "FK Warehouse": ["FK Warehouse", "FK FC", "fk_warehouse"],
+        "SAP Code": ["SAP Code", "Item Code", "sap_code"],
+        "FCN": ["FCN", "fcn"],
+        "Appointment No.": ["Appointment No.", "Appointment No", "appointment_no"],
+        "Appointment Date": ["Appointment Date", "appointment_date"],
+        "Pending Amount": ["Pending Amount", "Pending Amt", "pending_amount"],
+        "Allocated Qty.": ["Allocated Qty.", "Allocated Qty", "allocated_qty"],
+        "Billed Qty.": ["Billed Qty.", "Billed Qty", "Billing Qty", "billed_qty"],
+        "Remaining Qty.": ["Remaining Qty.", "Remaining Qty", "Balance To Bill", "balance_to_bill"],
+        "Sent For Billing (Yes/No)": ["Sent For Billing (Yes/No)", "Sent For Billing", "sent_for_billing"],
+        "Sent Date (YYYY-MM-DD)": ["Sent Date (YYYY-MM-DD)", "Sent Date", "sent_date"],
+        "Invoice No.": ["Invoice No.", "Invoice No", "Invoice Number", "invoice_no"],
+        "Billing Date (YYYY-MM-DD)": ["Billing Date (YYYY-MM-DD)", "Billing Date", "billing_date"],
+        "Billing Done (Yes/No)": ["Billing Done (Yes/No)", "Billing Done", "billing_done"],
+        "Remark": ["Remark", "Remarks", "remark"],
+    }
+
+    rename_map = {}
+
+    for target_col, options in aliases.items():
+        found_col = first_existing_column(correction_df, options)
+        if found_col:
+            rename_map[found_col] = target_col
+
+    correction_df = correction_df.rename(columns=rename_map)
+
+    if "Tracker ID" not in correction_df.columns:
+        return {
+            "replaced_rows": 0,
+            "deleted_rows": 0,
+            "error_rows": pd.DataFrame([{"Error": "Missing required column: Tracker ID"}])
+        }
+
+    if "Action" not in correction_df.columns:
+        correction_df["Action"] = "Replace"
+
+    tracker_df = get_tracker_df()
+
+    if tracker_df.empty:
+        return {
+            "replaced_rows": 0,
+            "deleted_rows": 0,
+            "error_rows": pd.DataFrame([{"Error": "No tracker rows found."}])
+        }
+
+    tracker_columns = get_allocation_tracker_columns()
+    tracker_by_id = {
+        int(row["id"]): row
+        for _, row in tracker_df.iterrows()
+    }
+
+    replace_map = {
+        "allocation_date": "Allocation Date",
+        "po_no": "PO No.",
+        "order_id": "Order ID",
+        "buyer_code": "Buyer Code",
+        "fsn": "FSN",
+        "title": "Title",
+        "rr_warehouse": "RR Warehouse",
+        "fk_warehouse": "FK Warehouse",
+        "sap_code": "SAP Code",
+        "fcn": "FCN",
+        "appointment_no": "Appointment No.",
+        "appointment_date": "Appointment Date",
+        "pending_amount": "Pending Amount",
+        "allocated_qty": "Allocated Qty.",
+        "billed_qty": "Billed Qty.",
+        "balance_to_bill": "Remaining Qty.",
+        "sent_for_billing": "Sent For Billing (Yes/No)",
+        "sent_date": "Sent Date (YYYY-MM-DD)",
+        "invoice_no": "Invoice No.",
+        "billing_date": "Billing Date (YYYY-MM-DD)",
+        "billing_done": "Billing Done (Yes/No)",
+        "remark": "Remark",
+    }
+
+    numeric_columns = {"pending_amount", "allocated_qty", "billed_qty", "balance_to_bill"}
+    date_columns = {"allocation_date", "appointment_date", "sent_date", "billing_date"}
+    yes_no_columns = {"sent_for_billing", "billing_done"}
+
+    replaced_rows = 0
+    deleted_rows = 0
+    errors = []
+
+    for row_no, row in correction_df.iterrows():
+        try:
+            tracker_id = int(clean_number(row["Tracker ID"]))
+        except Exception:
+            errors.append({
+                "Excel Row": row_no + 2,
+                "Tracker ID": row.get("Tracker ID", ""),
+                "Error": "Invalid Tracker ID"
+            })
+            continue
+
+        action = clean_text(row.get("Action", "Replace")).lower()
+
+        if action in ["delete", "remove", "deleted"]:
+            action = "delete"
+        elif action in ["replace", "update", "correct", "correction", ""]:
+            action = "replace"
+        else:
+            errors.append({
+                "Excel Row": row_no + 2,
+                "Tracker ID": tracker_id,
+                "Error": "Action must be Replace or Delete"
+            })
+            continue
+
+        if tracker_id not in tracker_by_id:
+            errors.append({
+                "Excel Row": row_no + 2,
+                "Tracker ID": tracker_id,
+                "Error": "Tracker ID not found"
+            })
+            continue
+
+        if action == "delete":
+            db_execute(
+                "DELETE FROM allocation_tracker WHERE id = :id",
+                {"id": tracker_id}
+            )
+            log_activity("tracker_correction_delete", f"Deleted allocation ID {tracker_id} from correction upload")
+            deleted_rows += 1
+            continue
+
+        existing = tracker_by_id[tracker_id]
+        update_values = {"id": tracker_id}
+        set_parts = []
+
+        for db_col, upload_col in replace_map.items():
+            if db_col not in tracker_columns or upload_col not in correction_df.columns:
+                continue
+
+            raw_value = row.get(upload_col, "")
+
+            if db_col in numeric_columns:
+                value = clean_number(raw_value)
+            elif db_col in date_columns:
+                value, date_error = parse_upload_date(raw_value)
+
+                if date_error:
+                    errors.append({
+                        "Excel Row": row_no + 2,
+                        "Tracker ID": tracker_id,
+                        "Error": date_error
+                    })
+                    value = None
+                    break
+            elif db_col in yes_no_columns:
+                value = normalize_yes_no(raw_value)
+
+                if value == "":
+                    errors.append({
+                        "Excel Row": row_no + 2,
+                        "Tracker ID": tracker_id,
+                        "Error": f"{upload_col} must be Yes or No"
+                    })
+                    break
+            else:
+                value = clean_text(raw_value)
+
+            update_values[db_col] = value
+            set_parts.append(f"{db_col} = :{db_col}")
+
+        else:
+            allocated_qty = update_values.get(
+                "allocated_qty",
+                clean_number(existing.get("allocated_qty", 0))
+            )
+            billed_qty = update_values.get(
+                "billed_qty",
+                clean_number(existing.get("billed_qty", 0))
+            )
+            remaining_qty = update_values.get(
+                "balance_to_bill",
+                max(allocated_qty - billed_qty, 0)
+            )
+
+            if allocated_qty < 0 or billed_qty < 0 or remaining_qty < 0:
+                errors.append({
+                    "Excel Row": row_no + 2,
+                    "Tracker ID": tracker_id,
+                    "Error": "Allocated Qty., Billed Qty., and Remaining Qty. cannot be negative"
+                })
+                continue
+
+            if "balance_to_bill" in tracker_columns and "balance_to_bill" not in update_values:
+                update_values["balance_to_bill"] = max(allocated_qty - billed_qty, 0)
+                set_parts.append("balance_to_bill = :balance_to_bill")
+
+            if "billing_done" in tracker_columns:
+                calculated_balance = update_values.get("balance_to_bill", remaining_qty)
+                update_values["billing_done"] = "Yes" if calculated_balance <= 0 and allocated_qty > 0 else "No"
+
+                if "billing_done = :billing_done" not in set_parts:
+                    set_parts.append("billing_done = :billing_done")
+
+            if "sent_for_billing" in tracker_columns:
+                invoice_no = update_values.get("invoice_no", clean_text(existing.get("invoice_no", "")))
+
+                if billed_qty > 0 or invoice_no != "" or update_values.get("billing_done", "") == "Yes":
+                    update_values["sent_for_billing"] = "Yes"
+
+                    if "sent_for_billing = :sent_for_billing" not in set_parts:
+                        set_parts.append("sent_for_billing = :sent_for_billing")
+
+            if not set_parts:
+                errors.append({
+                    "Excel Row": row_no + 2,
+                    "Tracker ID": tracker_id,
+                    "Error": "No replaceable columns found"
+                })
+                continue
+
+            db_execute(f"""
+            UPDATE allocation_tracker
+            SET {", ".join(set_parts)}
+            WHERE id = :id
+            """, update_values)
+
+            log_activity("tracker_correction_replace", f"Replaced allocation ID {tracker_id} from correction upload")
+            replaced_rows += 1
+
+    return {
+        "replaced_rows": replaced_rows,
+        "deleted_rows": deleted_rows,
+        "error_rows": pd.DataFrame(errors)
+    }
+
+
 # =====================================================
 # FSN BARCODE GENERATION
 # =====================================================
@@ -2717,6 +3031,81 @@ elif menu == "Allocation Tracker":
                         )
                         st.success(f"{update_result['updated_rows']} tracker rows updated successfully")
                         st.rerun()
+
+        if st.session_state.role == "Admin":
+            st.markdown("---")
+            st.subheader("Full Tracker Correction Upload")
+            st.caption(
+                "Admin only. Use this when allocation, billed qty., remaining qty., invoice, "
+                "or status was wrongly updated. Action must be Replace or Delete."
+            )
+
+            correction_template = get_tracker_correction_template_df(tracker)
+
+            with st.expander("Correction upload format"):
+                st.dataframe(correction_template.head(25), use_container_width=True)
+                st.download_button(
+                    "Download Full Correction Template",
+                    data=to_excel(correction_template),
+                    file_name="full_tracker_correction_template.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+            correction_file = st.file_uploader(
+                "Upload Full Tracker Correction File",
+                type=["xlsx"],
+                key="full_tracker_correction_file"
+            )
+
+            if correction_file is not None:
+                correction_uploaded_df, correction_read_error = read_uploaded_excel(
+                    correction_file,
+                    "Full Tracker Correction file"
+                )
+
+                if correction_read_error:
+                    st.error(correction_read_error)
+
+                else:
+                    st.write(f"Rows in uploaded file: {len(correction_uploaded_df):,}")
+                    st.dataframe(correction_uploaded_df.head(25), use_container_width=True)
+
+                    confirm_correction = st.checkbox(
+                        "I understand this will replace or delete existing tracker records",
+                        key="confirm_full_tracker_correction"
+                    )
+
+                    if st.button("Apply Full Tracker Correction Upload"):
+                        if not confirm_correction:
+                            st.error("Please confirm before applying tracker corrections.")
+
+                        else:
+                            correction_result = apply_tracker_correction_upload(correction_uploaded_df)
+
+                            if not correction_result["error_rows"].empty:
+                                st.warning(
+                                    f"{len(correction_result['error_rows'])} rows could not be corrected. "
+                                    "Please fix them and upload again."
+                                )
+                                st.dataframe(correction_result["error_rows"], use_container_width=True)
+                                st.download_button(
+                                    "Download Correction Errors",
+                                    data=to_excel(correction_result["error_rows"]),
+                                    file_name="tracker_correction_errors.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                )
+
+                            changed_rows = (
+                                correction_result["replaced_rows"] +
+                                correction_result["deleted_rows"]
+                            )
+
+                            if changed_rows > 0:
+                                st.success(
+                                    f"{correction_result['replaced_rows']} rows replaced and "
+                                    f"{correction_result['deleted_rows']} rows deleted successfully"
+                                )
+                                st.rerun()
 
         st.markdown("---")
         st.subheader("Emergency Manual Allocation Upload")
