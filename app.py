@@ -3586,7 +3586,7 @@ elif menu == "Allocation Tracker":
         tracker_task = st.selectbox(
             "Select Tracker Task",
             [
-                "View / Manual Table Edit",
+                "View / Manual Edit Table",
                 "Sent For Billing Download",
                 "Billing Update Upload",
                 "Sales Billing Auto Update Upload",
@@ -3595,6 +3595,7 @@ elif menu == "Allocation Tracker":
                 "Delete Allocation Upload",
             ]
         )
+        st.caption("Select 'View / Manual Edit Table' when you want to see or manually update tracker rows.")
 
         if tracker_task == "Sent For Billing Download":
             sent_for_billing_export = get_sent_for_billing_download_df(tracker)
@@ -3913,7 +3914,7 @@ elif menu == "Allocation Tracker":
                             st.success(f"{deleted_count} allocation rows deleted successfully")
                             st.rerun()
 
-        if tracker_task == "View / Manual Table Edit":
+        if tracker_task == "View / Manual Edit Table":
             if len(tracker) > 500:
                 show_all_tracker_rows = st.checkbox(
                     "Show all tracker rows in editable table (slower)",
