@@ -226,6 +226,17 @@ def db_execute(query, params=None, clear_cache=True):
         st.cache_data.clear()
 
 
+def db_execute_many(query, params_list, clear_cache=True):
+    if not params_list:
+        return
+
+    with engine.begin() as connection:
+        connection.execute(text(query), params_list)
+
+    if clear_cache:
+        st.cache_data.clear()
+
+
 def ensure_performance_indexes():
     index_queries = [
         """
@@ -241,6 +252,30 @@ def ensure_performance_indexes():
         ADD COLUMN IF NOT EXISTS fcn TEXT
         """,
         """
+        ALTER TABLE allocation_tracker
+        ADD COLUMN IF NOT EXISTS order_id TEXT
+        """,
+        """
+        ALTER TABLE allocation_tracker
+        ADD COLUMN IF NOT EXISTS buyer_code TEXT
+        """,
+        """
+        ALTER TABLE allocation_tracker
+        ADD COLUMN IF NOT EXISTS pending_amount REAL DEFAULT 0
+        """,
+        """
+        ALTER TABLE allocation_tracker
+        ADD COLUMN IF NOT EXISTS billed_qty REAL DEFAULT 0
+        """,
+        """
+        ALTER TABLE allocation_tracker
+        ADD COLUMN IF NOT EXISTS balance_to_bill REAL DEFAULT 0
+        """,
+        """
+        ALTER TABLE allocation_tracker
+        ADD COLUMN IF NOT EXISTS billing_source TEXT
+        """,
+        """
         CREATE INDEX IF NOT EXISTS idx_allocation_tracker_sent_billing
         ON allocation_tracker (sent_for_billing, billing_done)
         """,
@@ -251,6 +286,30 @@ def ensure_performance_indexes():
         """
         CREATE INDEX IF NOT EXISTS idx_allocation_tracker_po_fsn_rr_fk
         ON allocation_tracker (po_no, fsn, rr_warehouse, fk_warehouse)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_allocation_tracker_sales_match
+        ON allocation_tracker (po_no, fsn, sap_code, rr_warehouse)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_allocation_tracker_invoice
+        ON allocation_tracker (invoice_no)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_allocation_tracker_allocation_date
+        ON allocation_tracker (allocation_date)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_allocation_tracker_billing_date
+        ON allocation_tracker (billing_date)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_allocation_tracker_sent_date
+        ON allocation_tracker (sent_date)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_allocation_tracker_order_id
+        ON allocation_tracker (order_id)
         """,
         """
         CREATE INDEX IF NOT EXISTS idx_allocation_tracker_id
@@ -1191,7 +1250,7 @@ def apply_billing_update_upload(uploaded_df):
                 **update_fields,
                 "billed_qty": billed_qty,
                 "balance_to_bill": balance_to_bill,
-            })
+            }, clear_cache=False)
 
         else:
             db_execute("""
@@ -1205,10 +1264,13 @@ def apply_billing_update_upload(uploaded_df):
                 billing_done = :billing_done,
                 remark = :remark
             WHERE id = :id
-            """, update_fields)
+            """, update_fields, clear_cache=False)
 
         updated_rows += 1
         updated_ids.append(tracker_id)
+
+    if updated_rows > 0:
+        st.cache_data.clear()
 
     return {
         "updated_rows": updated_rows,
@@ -1513,10 +1575,13 @@ def apply_sales_billing_update_upload(uploaded_df, tracker_df):
         UPDATE allocation_tracker
         SET {", ".join(update_fields)}
         WHERE id = :id
-        """, params)
+        """, params, clear_cache=False)
 
         updated_rows += 1
         updated_ids.append(tracker_id)
+
+    if updated_rows > 0:
+        st.cache_data.clear()
 
     return {
         **verification_result,
@@ -1607,7 +1672,7 @@ def save_appointment_upload(appointment_df):
         AND fsn = :fsn
         AND COALESCE(fk_warehouse, '') = COALESCE(:fk_warehouse, '')
         AND COALESCE(po_no, '') = COALESCE(:po_no, '')
-        """, params)
+        """, params, clear_cache=False)
 
         db_execute("""
         INSERT INTO appointment_tracker (
@@ -1630,9 +1695,12 @@ def save_appointment_upload(appointment_df):
             :appointment_qty,
             :remark
         )
-        """, params)
+        """, params, clear_cache=False)
 
         saved_count += 1
+
+    if saved_count > 0:
+        st.cache_data.clear()
 
     return saved_count
 
@@ -1770,9 +1838,12 @@ def save_manual_allocation_upload(manual_df):
         db_execute(f"""
         INSERT INTO allocation_tracker ({", ".join(insert_columns)})
         VALUES ({", ".join(value_keys)})
-        """, params)
+        """, params, clear_cache=False)
 
         saved_count += 1
+
+    if saved_count > 0:
+        st.cache_data.clear()
 
     return saved_count
 
@@ -1817,10 +1888,14 @@ def apply_delete_allocation_upload(uploaded_df):
 
         db_execute(
             "DELETE FROM allocation_tracker WHERE id = :id",
-            {"id": tracker_id}
+            {"id": tracker_id},
+            clear_cache=False
         )
         log_activity("delete_allocation", f"Deleted allocation ID {tracker_id}. Reason: {reason}")
         deleted_count += 1
+
+    if deleted_count > 0:
+        st.cache_data.clear()
 
     return deleted_count, pd.DataFrame(errors)
 
@@ -2170,7 +2245,7 @@ def apply_tracker_correction_upload(uploaded_df):
                 db_execute(f"""
                 INSERT INTO allocation_tracker ({", ".join(insert_columns)})
                 VALUES ({", ".join(value_keys)})
-                """, new_values)
+                """, new_values, clear_cache=False)
 
                 log_activity("tracker_correction_new", "Inserted new allocation row from correction upload")
                 inserted_rows += 1
@@ -2181,7 +2256,8 @@ def apply_tracker_correction_upload(uploaded_df):
         if action == "delete":
             db_execute(
                 "DELETE FROM allocation_tracker WHERE id = :id",
-                {"id": tracker_id}
+                {"id": tracker_id},
+                clear_cache=False
             )
             log_activity("tracker_correction_delete", f"Deleted allocation ID {tracker_id} from correction upload")
             deleted_rows += 1
@@ -2280,10 +2356,13 @@ def apply_tracker_correction_upload(uploaded_df):
             UPDATE allocation_tracker
             SET {", ".join(set_parts)}
             WHERE id = :id
-            """, update_values)
+            """, update_values, clear_cache=False)
 
             log_activity("tracker_correction_replace", f"Replaced allocation ID {tracker_id} from correction upload")
             replaced_rows += 1
+
+    if inserted_rows > 0 or replaced_rows > 0 or deleted_rows > 0:
+        st.cache_data.clear()
 
     return {
         "inserted_rows": inserted_rows,
@@ -3101,9 +3180,12 @@ def save_allocation(df):
         VALUES (
             {", ".join(value_keys)}
         )
-        """, params)
+        """, params, clear_cache=False)
 
         saved_count += 1
+
+    if saved_count > 0:
+        st.cache_data.clear()
 
     return saved_count
 
@@ -3953,7 +4035,7 @@ elif menu == "Allocation Tracker":
                             "sent_for_billing": "Yes",
                             "sent_date": str(bulk_sent_date),
                             "id": int(allocation_id)
-                        })
+                        }, clear_cache=False)
 
                     if bulk_billing_tick:
                         if "billed_qty" in tracker.columns and "balance_to_bill" in tracker.columns:
@@ -3969,7 +4051,7 @@ elif menu == "Allocation Tracker":
                                 "billing_done": "Yes",
                                 "billing_date": str(bulk_billing_date),
                                 "id": int(allocation_id)
-                            })
+                            }, clear_cache=False)
 
                         else:
                             db_execute("""
@@ -3982,7 +4064,7 @@ elif menu == "Allocation Tracker":
                                 "billing_done": "Yes",
                                 "billing_date": str(bulk_billing_date),
                                 "id": int(allocation_id)
-                            })
+                            }, clear_cache=False)
 
                     if bulk_invoice_no.strip() != "":
                         db_execute("""
@@ -3992,7 +4074,7 @@ elif menu == "Allocation Tracker":
                         """, {
                             "invoice_no": bulk_invoice_no,
                             "id": int(allocation_id)
-                        })
+                        }, clear_cache=False)
 
                     if bulk_remark.strip() != "":
                         db_execute("""
@@ -4002,8 +4084,9 @@ elif menu == "Allocation Tracker":
                         """, {
                             "remark": bulk_remark,
                             "id": int(allocation_id)
-                        })
+                        }, clear_cache=False)
 
+                st.cache_data.clear()
                 st.success("Bulk update applied successfully")
                 st.rerun()
 
@@ -4069,7 +4152,7 @@ elif menu == "Allocation Tracker":
                     "invoice_no": row["invoice_no"],
                     "remark": row["remark"],
                     "id": int(row["id"])
-                })
+                }, clear_cache=False)
 
                 if "billed_qty" in edited_df.columns and "balance_to_bill" in tracker.columns:
                     db_execute("""
@@ -4082,8 +4165,9 @@ elif menu == "Allocation Tracker":
                         "billed_qty": manual_billed_qty,
                         "balance_to_bill": manual_balance_to_bill,
                         "id": int(row["id"])
-                    })
+                    }, clear_cache=False)
 
+            st.cache_data.clear()
             st.success("Manual tracker updates saved successfully")
             st.rerun()
 
