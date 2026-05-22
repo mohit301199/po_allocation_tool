@@ -3583,593 +3583,613 @@ elif menu == "Allocation Tracker":
         render_full_tracker_correction_upload(tracker)
 
     else:
-        sent_for_billing_export = get_sent_for_billing_download_df(tracker)
+        tracker_task = st.selectbox(
+            "Select Tracker Task",
+            [
+                "View / Manual Table Edit",
+                "Sent For Billing Download",
+                "Billing Update Upload",
+                "Sales Billing Auto Update Upload",
+                "Full Tracker Correction Upload",
+                "Emergency Manual Allocation Upload",
+                "Delete Allocation Upload",
+            ]
+        )
 
-        st.markdown("---")
-        st.subheader("Sent For Billing Download")
+        if tracker_task == "Sent For Billing Download":
+            sent_for_billing_export = get_sent_for_billing_download_df(tracker)
 
-        if sent_for_billing_export.empty:
-            st.info("No rows are currently marked as Sent for Billing.")
-        else:
+            st.markdown("---")
+            st.subheader("Sent For Billing Download")
+
+            if sent_for_billing_export.empty:
+                st.info("No rows are currently marked as Sent for Billing.")
+            else:
+                st.download_button(
+                    "Download Sent For Billing Rows",
+                    data=to_excel(sent_for_billing_export),
+                    file_name="sent_for_billing_rows.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+        if tracker_task == "Billing Update Upload":
+            st.markdown("---")
+            st.subheader("Billing Update Upload")
+            st.caption(
+                "Download this Excel, fill Invoice No., Billing Date as YYYY-MM-DD, "
+                "Sent For Billing as Yes/No, Billed Qty., Billing Done as Yes/No, and upload it back. "
+                "Tracker ID must not be changed."
+            )
+
+            billing_update_template = get_billing_update_template_df(tracker)
+
             st.download_button(
-                "Download Sent For Billing Rows",
-                data=to_excel(sent_for_billing_export),
-                file_name="sent_for_billing_rows.xlsx",
+                "Download Billing Update Template",
+                data=to_excel(billing_update_template),
+                file_name="billing_update_template.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 
-        st.markdown("---")
-        st.subheader("Billing Update Upload")
-        st.caption(
-            "Download this Excel, fill Invoice No., Billing Date as YYYY-MM-DD, "
-            "Sent For Billing as Yes/No, Billed Qty., Billing Done as Yes/No, and upload it back. "
-            "Tracker ID must not be changed."
-        )
-
-        billing_update_template = get_billing_update_template_df(tracker)
-
-        st.download_button(
-            "Download Billing Update Template",
-            data=to_excel(billing_update_template),
-            file_name="billing_update_template.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-        billing_update_file = st.file_uploader(
-            "Upload Completed Billing Update File",
-            type=["xlsx"],
-            key="billing_update_file"
-        )
-
-        if billing_update_file is not None:
-            uploaded_df, read_error = read_uploaded_excel(
-                billing_update_file,
-                "Billing Update file"
+            billing_update_file = st.file_uploader(
+                "Upload Completed Billing Update File",
+                type=["xlsx"],
+                key="billing_update_file"
             )
 
-            if read_error:
-                st.error(read_error)
+            if billing_update_file is not None:
+                uploaded_df, read_error = read_uploaded_excel(
+                    billing_update_file,
+                    "Billing Update file"
+                )
 
-            else:
-                st.write(f"Rows in uploaded file: {len(uploaded_df):,}")
-                st.dataframe(uploaded_df.head(25), use_container_width=True)
+                if read_error:
+                    st.error(read_error)
 
-                if st.button("Apply Billing Update Upload"):
-                    update_result = apply_billing_update_upload(uploaded_df)
+                else:
+                    st.write(f"Rows in uploaded file: {len(uploaded_df):,}")
+                    st.dataframe(uploaded_df.head(25), use_container_width=True)
 
-                    if not update_result["error_rows"].empty:
+                    if st.button("Apply Billing Update Upload"):
+                        update_result = apply_billing_update_upload(uploaded_df)
+
+                        if not update_result["error_rows"].empty:
+                            st.warning(
+                                f"{len(update_result['error_rows'])} rows could not be updated. "
+                                "Please fix them and upload again."
+                            )
+                            st.dataframe(update_result["error_rows"], use_container_width=True)
+                            st.download_button(
+                                "Download Billing Update Errors",
+                                data=to_excel(update_result["error_rows"]),
+                                file_name="billing_update_errors.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+
+                        if update_result["updated_rows"] > 0:
+                            st.session_state.latest_billing_update_ids = update_result["updated_ids"]
+                            log_activity(
+                                "billing_update_upload",
+                                f"{update_result['updated_rows']} tracker rows updated from upload"
+                            )
+                            st.success(f"{update_result['updated_rows']} tracker rows updated successfully")
+                            st.rerun()
+
+        if tracker_task == "Sales Billing Auto Update Upload":
+            st.markdown("---")
+            st.subheader("Sales Billing Auto Update Upload")
+            st.caption(
+                "Upload the system sales file to compare invoice billing against tracker billed qty. "
+                "Safe exact matches can be applied automatically after review."
+            )
+
+            sales_verification_file = st.file_uploader(
+                "Upload Sales File For Verification",
+                type=["xlsx"],
+                key="sales_verification_file"
+            )
+
+            if sales_verification_file is not None:
+                sales_uploaded_df, sales_read_error = read_uploaded_excel(
+                    sales_verification_file,
+                    "Sales Verification file"
+                )
+
+                if sales_read_error:
+                    st.error(sales_read_error)
+
+                else:
+                    verification_result = verify_sales_billing_against_tracker(
+                        sales_uploaded_df,
+                        tracker
+                    )
+
+                    st.markdown("#### Verification Summary")
+                    st.dataframe(
+                        verification_result["summary"],
+                        use_container_width=True
+                    )
+
+                    if not verification_result["exceptions"].empty:
+                        st.markdown("#### Exceptions To Review")
                         st.warning(
-                            f"{len(update_result['error_rows'])} rows could not be updated. "
-                            "Please fix them and upload again."
+                            f"{len(verification_result['exceptions'])} tracker rows need review before automation."
                         )
-                        st.dataframe(update_result["error_rows"], use_container_width=True)
+                        st.dataframe(
+                            verification_result["exceptions"],
+                            use_container_width=True
+                        )
                         st.download_button(
-                            "Download Billing Update Errors",
-                            data=to_excel(update_result["error_rows"]),
-                            file_name="billing_update_errors.xlsx",
+                            "Download Sales Verification Exceptions",
+                            data=to_excel(verification_result["exceptions"]),
+                            file_name="sales_billing_verification_exceptions.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
 
-                    if update_result["updated_rows"] > 0:
-                        st.session_state.latest_billing_update_ids = update_result["updated_ids"]
-                        log_activity(
-                            "billing_update_upload",
-                            f"{update_result['updated_rows']} tracker rows updated from upload"
+                    else:
+                        st.success("No tracker billing exceptions found.")
+
+                    if not verification_result["updateable_rows"].empty:
+                        st.markdown("#### Rows Safe For Auto Update")
+                        st.success(
+                            f"{len(verification_result['updateable_rows'])} rows can be updated from sales data."
                         )
-                        st.success(f"{update_result['updated_rows']} tracker rows updated successfully")
-                        st.rerun()
+                        st.dataframe(
+                            verification_result["updateable_rows"],
+                            use_container_width=True
+                        )
+                        st.download_button(
+                            "Download Rows Safe For Auto Update",
+                            data=to_excel(verification_result["updateable_rows"]),
+                            file_name="sales_billing_rows_safe_for_update.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
 
-        st.markdown("---")
-        st.subheader("Sales Billing Auto Update Upload")
-        st.caption(
-            "Upload the system sales file to compare invoice billing against tracker billed qty. "
-            "Safe exact matches can be applied automatically after review."
-        )
+                        confirm_sales_update = st.checkbox(
+                            "I reviewed the sales verification and want to update safe tracker rows",
+                            key="confirm_sales_billing_auto_update"
+                        )
 
-        sales_verification_file = st.file_uploader(
-            "Upload Sales File For Verification",
-            type=["xlsx"],
-            key="sales_verification_file"
-        )
-
-        if sales_verification_file is not None:
-            sales_uploaded_df, sales_read_error = read_uploaded_excel(
-                sales_verification_file,
-                "Sales Verification file"
-            )
-
-            if sales_read_error:
-                st.error(sales_read_error)
-
-            else:
-                verification_result = verify_sales_billing_against_tracker(
-                    sales_uploaded_df,
-                    tracker
-                )
-
-                st.markdown("#### Verification Summary")
-                st.dataframe(
-                    verification_result["summary"],
-                    use_container_width=True
-                )
-
-                if not verification_result["exceptions"].empty:
-                    st.markdown("#### Exceptions To Review")
-                    st.warning(
-                        f"{len(verification_result['exceptions'])} tracker rows need review before automation."
-                    )
-                    st.dataframe(
-                        verification_result["exceptions"],
-                        use_container_width=True
-                    )
-                    st.download_button(
-                        "Download Sales Verification Exceptions",
-                        data=to_excel(verification_result["exceptions"]),
-                        file_name="sales_billing_verification_exceptions.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-
-                else:
-                    st.success("No tracker billing exceptions found.")
-
-                if not verification_result["updateable_rows"].empty:
-                    st.markdown("#### Rows Safe For Auto Update")
-                    st.success(
-                        f"{len(verification_result['updateable_rows'])} rows can be updated from sales data."
-                    )
-                    st.dataframe(
-                        verification_result["updateable_rows"],
-                        use_container_width=True
-                    )
-                    st.download_button(
-                        "Download Rows Safe For Auto Update",
-                        data=to_excel(verification_result["updateable_rows"]),
-                        file_name="sales_billing_rows_safe_for_update.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-
-                    confirm_sales_update = st.checkbox(
-                        "I reviewed the sales verification and want to update safe tracker rows",
-                        key="confirm_sales_billing_auto_update"
-                    )
-
-                    if st.button("Apply Sales Billing Auto Update"):
-                        if not confirm_sales_update:
-                            st.error("Please confirm before applying sales billing updates.")
-
-                        else:
-                            sales_update_result = apply_sales_billing_update_upload(
-                                sales_uploaded_df,
-                                tracker
-                            )
-
-                            if sales_update_result["updated_rows"] > 0:
-                                st.session_state.latest_billing_update_ids = sales_update_result["updated_ids"]
-                                log_activity(
-                                    "sales_billing_upload",
-                                    f"{sales_update_result['updated_rows']} tracker rows updated from sales file"
-                                )
-                                st.success(
-                                    f"{sales_update_result['updated_rows']} tracker rows updated from sales file"
-                                )
-                                st.rerun()
+                        if st.button("Apply Sales Billing Auto Update"):
+                            if not confirm_sales_update:
+                                st.error("Please confirm before applying sales billing updates.")
 
                             else:
-                                st.warning("No tracker rows were updated from this sales file.")
+                                sales_update_result = apply_sales_billing_update_upload(
+                                    sales_uploaded_df,
+                                    tracker
+                                )
 
-                else:
-                    st.info("No rows are currently safe for automatic sales update.")
+                                if sales_update_result["updated_rows"] > 0:
+                                    st.session_state.latest_billing_update_ids = sales_update_result["updated_ids"]
+                                    log_activity(
+                                        "sales_billing_upload",
+                                        f"{sales_update_result['updated_rows']} tracker rows updated from sales file"
+                                    )
+                                    st.success(
+                                        f"{sales_update_result['updated_rows']} tracker rows updated from sales file"
+                                    )
+                                    st.rerun()
 
-                if not verification_result["unmatched_sales"].empty:
-                    st.markdown("#### Sales Rows Not Found In Tracker")
-                    st.info(
-                        f"{len(verification_result['unmatched_sales'])} sales billing keys did not match tracker."
-                    )
-                    st.dataframe(
-                        verification_result["unmatched_sales"],
-                        use_container_width=True
-                    )
-                    st.download_button(
-                        "Download Unmatched Sales Rows",
-                        data=to_excel(verification_result["unmatched_sales"]),
-                        file_name="sales_rows_not_found_in_tracker.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                                else:
+                                    st.warning("No tracker rows were updated from this sales file.")
 
-                st.markdown("#### Matched Rows")
-                if verification_result["matches"].empty:
-                    st.info("No exact matched billing rows found.")
-                else:
-                    st.dataframe(
-                        verification_result["matches"],
-                        use_container_width=True
-                    )
-                    st.download_button(
-                        "Download Matched Sales Verification Rows",
-                        data=to_excel(verification_result["matches"]),
-                        file_name="sales_billing_verification_matches.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                    else:
+                        st.info("No rows are currently safe for automatic sales update.")
 
-        render_full_tracker_correction_upload(tracker)
+                    if not verification_result["unmatched_sales"].empty:
+                        st.markdown("#### Sales Rows Not Found In Tracker")
+                        st.info(
+                            f"{len(verification_result['unmatched_sales'])} sales billing keys did not match tracker."
+                        )
+                        st.dataframe(
+                            verification_result["unmatched_sales"],
+                            use_container_width=True
+                        )
+                        st.download_button(
+                            "Download Unmatched Sales Rows",
+                            data=to_excel(verification_result["unmatched_sales"]),
+                            file_name="sales_rows_not_found_in_tracker.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
 
-        st.markdown("---")
-        st.subheader("Emergency Manual Allocation Upload")
-        st.caption(
-            "Use this only when the allocation must be inserted manually because SO/internal data changed."
-        )
+                    st.markdown("#### Matched Rows")
+                    if verification_result["matches"].empty:
+                        st.info("No exact matched billing rows found.")
+                    else:
+                        st.dataframe(
+                            verification_result["matches"],
+                            use_container_width=True
+                        )
+                        st.download_button(
+                            "Download Matched Sales Verification Rows",
+                            data=to_excel(verification_result["matches"]),
+                            file_name="sales_billing_verification_matches.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
 
-        manual_allocation_template = get_manual_allocation_template_df()
+        if tracker_task == "Full Tracker Correction Upload":
+            render_full_tracker_correction_upload(tracker)
 
-        with st.expander("Manual allocation upload format"):
-            st.dataframe(manual_allocation_template, use_container_width=True)
-            st.download_button(
-                "Download Manual Allocation Template",
-                data=to_excel(manual_allocation_template),
-                file_name="manual_allocation_upload_template.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        if tracker_task == "Emergency Manual Allocation Upload":
+            st.markdown("---")
+            st.subheader("Emergency Manual Allocation Upload")
+            st.caption(
+                "Use this only when the allocation must be inserted manually because SO/internal data changed."
             )
 
-        manual_allocation_file = st.file_uploader(
-            "Upload Manual Allocation File",
-            type=["xlsx"],
-            key="manual_allocation_file"
-        )
+            manual_allocation_template = get_manual_allocation_template_df()
 
-        if manual_allocation_file is not None:
-            manual_uploaded_df, manual_read_error = read_uploaded_excel(
-                manual_allocation_file,
-                "Manual Allocation file"
-            )
-
-            if manual_read_error:
-                st.error(manual_read_error)
-
-            else:
-                manual_df, missing_manual_cols = prepare_manual_allocation_upload(
-                    manual_uploaded_df
+            with st.expander("Manual allocation upload format"):
+                st.dataframe(manual_allocation_template, use_container_width=True)
+                st.download_button(
+                    "Download Manual Allocation Template",
+                    data=to_excel(manual_allocation_template),
+                    file_name="manual_allocation_upload_template.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
-                if missing_manual_cols:
-                    st.error(f"Missing columns in Manual Allocation file: {missing_manual_cols}")
+            manual_allocation_file = st.file_uploader(
+                "Upload Manual Allocation File",
+                type=["xlsx"],
+                key="manual_allocation_file"
+            )
 
-                elif manual_df.empty:
-                    st.warning("No valid manual allocation rows found.")
+            if manual_allocation_file is not None:
+                manual_uploaded_df, manual_read_error = read_uploaded_excel(
+                    manual_allocation_file,
+                    "Manual Allocation file"
+                )
+
+                if manual_read_error:
+                    st.error(manual_read_error)
 
                 else:
-                    st.dataframe(manual_df, use_container_width=True)
+                    manual_df, missing_manual_cols = prepare_manual_allocation_upload(
+                        manual_uploaded_df
+                    )
 
-                    if st.button("Save Manual Allocation Upload"):
-                        saved_manual_rows = save_manual_allocation_upload(manual_df)
-                        log_activity("manual_allocation_upload", f"{saved_manual_rows} manual rows saved")
-                        st.success(f"{saved_manual_rows} manual allocation rows saved successfully")
-                        st.rerun()
+                    if missing_manual_cols:
+                        st.error(f"Missing columns in Manual Allocation file: {missing_manual_cols}")
 
-        st.markdown("---")
-        st.subheader("Delete Allocation Upload")
-        st.caption(
-            "Use this when an SO/internal allocation must be revised. Deleted rows are removed from stock blocking."
-        )
+                    elif manual_df.empty:
+                        st.warning("No valid manual allocation rows found.")
 
-        delete_template = pd.DataFrame({
-            "Tracker ID": [int(tracker.iloc[0]["id"])],
-            "Delete Reason": ["SO revised / wrong allocation"],
-        })
+                    else:
+                        st.dataframe(manual_df, use_container_width=True)
 
-        with st.expander("Delete upload format"):
-            st.dataframe(delete_template, use_container_width=True)
-            st.download_button(
-                "Download Delete Allocation Template",
-                data=to_excel(delete_template),
-                file_name="delete_allocation_upload_template.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+                        if st.button("Save Manual Allocation Upload"):
+                            saved_manual_rows = save_manual_allocation_upload(manual_df)
+                            log_activity("manual_allocation_upload", f"{saved_manual_rows} manual rows saved")
+                            st.success(f"{saved_manual_rows} manual allocation rows saved successfully")
+                            st.rerun()
 
-        delete_file = st.file_uploader(
-            "Upload Delete Allocation File",
-            type=["xlsx"],
-            key="delete_allocation_file"
-        )
-
-        if delete_file is not None:
-            delete_uploaded_df, delete_read_error = read_uploaded_excel(
-                delete_file,
-                "Delete Allocation file"
-            )
-
-            if delete_read_error:
-                st.error(delete_read_error)
-
-            else:
-                st.dataframe(delete_uploaded_df.head(25), use_container_width=True)
-
-                if st.button("Apply Delete Allocation Upload"):
-                    deleted_count, delete_errors = apply_delete_allocation_upload(delete_uploaded_df)
-
-                    if not delete_errors.empty:
-                        st.warning(f"{len(delete_errors)} rows could not be deleted.")
-                        st.dataframe(delete_errors, use_container_width=True)
-
-                    if deleted_count > 0:
-                        st.success(f"{deleted_count} allocation rows deleted successfully")
-                        st.rerun()
-
-        if len(tracker) > 500:
-            show_all_tracker_rows = st.checkbox(
-                "Show all tracker rows in editable table (slower)",
-                value=False
-            )
-
-            editable_source_df = tracker if show_all_tracker_rows else tracker.head(500)
+        if tracker_task == "Delete Allocation Upload":
+            st.markdown("---")
+            st.subheader("Delete Allocation Upload")
             st.caption(
-                f"Editable table showing {len(editable_source_df):,} of {len(tracker):,} rows."
+                "Use this when an SO/internal allocation must be revised. Deleted rows are removed from stock blocking."
             )
 
-        else:
-            editable_source_df = tracker
+            delete_template = pd.DataFrame({
+                "Tracker ID": [int(tracker.iloc[0]["id"])],
+                "Delete Reason": ["SO revised / wrong allocation"],
+            })
 
-        editable_tracker = editable_source_df.copy()
+            with st.expander("Delete upload format"):
+                st.dataframe(delete_template, use_container_width=True)
+                st.download_button(
+                    "Download Delete Allocation Template",
+                    data=to_excel(delete_template),
+                    file_name="delete_allocation_upload_template.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
-        editable_tracker["sent_for_billing"] = editable_tracker["sent_for_billing"].fillna("No")
-        editable_tracker["billing_done"] = editable_tracker["billing_done"].fillna("No")
-        editable_tracker["invoice_no"] = editable_tracker["invoice_no"].fillna("")
-        editable_tracker["remark"] = editable_tracker["remark"].fillna("")
-
-        if "billed_qty" in editable_tracker.columns:
-            editable_tracker["billed_qty"] = editable_tracker["billed_qty"].fillna(0)
-
-        if "balance_to_bill" in editable_tracker.columns:
-            editable_tracker["balance_to_bill"] = (
-                editable_tracker["allocated_qty"].fillna(0) -
-                editable_tracker.get("billed_qty", 0)
-            ).apply(lambda x: max(clean_number(x), 0))
-
-        editable_tracker["sent_for_billing_tick"] = editable_tracker["sent_for_billing"].apply(
-            lambda x: True if str(x).strip().lower() == "yes" else False
-        )
-
-        editable_tracker["billing_done_tick"] = editable_tracker["billing_done"].apply(
-            lambda x: True if str(x).strip().lower() == "yes" else False
-        )
-
-        editable_tracker["sent_date"] = pd.to_datetime(
-            editable_tracker["sent_date"],
-            errors="coerce"
-        ).dt.date
-
-        editable_tracker["billing_date"] = pd.to_datetime(
-            editable_tracker["billing_date"],
-            errors="coerce"
-        ).dt.date
-
-        editable_tracker = editable_tracker.drop(
-            columns=["sent_for_billing", "billing_done"],
-            errors="ignore"
-        )
-
-        tracker_display_columns = [
-            "id",
-            "allocation_date",
-            "po_no",
-            "order_id",
-            "buyer_code",
-            "fsn",
-            "title",
-            "rr_warehouse",
-            "fk_warehouse",
-            "sap_code",
-            "fcn",
-            "appointment_no",
-            "appointment_date",
-            "pending_amount",
-            "allocated_qty",
-            "billed_qty",
-            "balance_to_bill",
-            "sent_date",
-            "billing_date",
-            "invoice_no",
-            "remark",
-            "sent_for_billing_tick",
-            "billing_done_tick",
-        ]
-
-        tracker_display_columns = [
-            col for col in tracker_display_columns if col in editable_tracker.columns
-        ]
-
-        editable_tracker = editable_tracker[tracker_display_columns]
-
-        st.markdown("---")
-        st.subheader("Bulk Update")
-
-        select_all = st.checkbox("Select All Allocation Rows")
-
-        if select_all:
-            selected_ids = editable_tracker["id"].tolist()
-            st.info(f"{len(selected_ids)} rows selected.")
-        else:
-            selected_ids = st.multiselect(
-                "Select Allocation IDs",
-                options=editable_tracker["id"].tolist()
+            delete_file = st.file_uploader(
+                "Upload Delete Allocation File",
+                type=["xlsx"],
+                key="delete_allocation_file"
             )
 
-        b1, b2, b3, b4 = st.columns(4)
+            if delete_file is not None:
+                delete_uploaded_df, delete_read_error = read_uploaded_excel(
+                    delete_file,
+                    "Delete Allocation file"
+                )
 
-        with b1:
-            bulk_sent_tick = st.checkbox("Mark Sent for Billing")
+                if delete_read_error:
+                    st.error(delete_read_error)
 
-        with b2:
-            bulk_sent_date = st.date_input("Sent Date")
+                else:
+                    st.dataframe(delete_uploaded_df.head(25), use_container_width=True)
 
-        with b3:
-            bulk_billing_tick = st.checkbox("Mark Billing Done")
+                    if st.button("Apply Delete Allocation Upload"):
+                        deleted_count, delete_errors = apply_delete_allocation_upload(delete_uploaded_df)
 
-        with b4:
-            bulk_billing_date = st.date_input("Billing Date")
+                        if not delete_errors.empty:
+                            st.warning(f"{len(delete_errors)} rows could not be deleted.")
+                            st.dataframe(delete_errors, use_container_width=True)
 
-        b5, b6 = st.columns(2)
+                        if deleted_count > 0:
+                            st.success(f"{deleted_count} allocation rows deleted successfully")
+                            st.rerun()
 
-        with b5:
-            bulk_invoice_no = st.text_input("Invoice No. Optional")
+        if tracker_task == "View / Manual Table Edit":
+            if len(tracker) > 500:
+                show_all_tracker_rows = st.checkbox(
+                    "Show all tracker rows in editable table (slower)",
+                    value=False
+                )
 
-        with b6:
-            bulk_remark = st.text_input("Remark Optional")
-
-        if st.button("Apply Bulk Update"):
-            if len(selected_ids) == 0:
-                st.error("Please select at least one allocation row.")
-
-            elif not bulk_sent_tick and not bulk_billing_tick and bulk_invoice_no == "" and bulk_remark == "":
-                st.error("Please choose at least one update action.")
+                editable_source_df = tracker if show_all_tracker_rows else tracker.head(500)
+                st.caption(
+                    f"Editable table showing {len(editable_source_df):,} of {len(tracker):,} rows."
+                )
 
             else:
-                for allocation_id in selected_ids:
-                    if bulk_sent_tick:
-                        db_execute("""
-                        UPDATE allocation_tracker
-                        SET
-                            sent_for_billing = :sent_for_billing,
-                            sent_date = :sent_date
-                        WHERE id = :id
-                        """, {
-                            "sent_for_billing": "Yes",
-                            "sent_date": str(bulk_sent_date),
-                            "id": int(allocation_id)
-                        }, clear_cache=False)
+                editable_source_df = tracker
 
-                    if bulk_billing_tick:
-                        if "billed_qty" in tracker.columns and "balance_to_bill" in tracker.columns:
+            editable_tracker = editable_source_df.copy()
+
+            editable_tracker["sent_for_billing"] = editable_tracker["sent_for_billing"].fillna("No")
+            editable_tracker["billing_done"] = editable_tracker["billing_done"].fillna("No")
+            editable_tracker["invoice_no"] = editable_tracker["invoice_no"].fillna("")
+            editable_tracker["remark"] = editable_tracker["remark"].fillna("")
+
+            if "billed_qty" in editable_tracker.columns:
+                editable_tracker["billed_qty"] = editable_tracker["billed_qty"].fillna(0)
+
+            if "balance_to_bill" in editable_tracker.columns:
+                editable_tracker["balance_to_bill"] = (
+                    editable_tracker["allocated_qty"].fillna(0) -
+                    editable_tracker.get("billed_qty", 0)
+                ).apply(lambda x: max(clean_number(x), 0))
+
+            editable_tracker["sent_for_billing_tick"] = editable_tracker["sent_for_billing"].apply(
+                lambda x: True if str(x).strip().lower() == "yes" else False
+            )
+
+            editable_tracker["billing_done_tick"] = editable_tracker["billing_done"].apply(
+                lambda x: True if str(x).strip().lower() == "yes" else False
+            )
+
+            editable_tracker["sent_date"] = pd.to_datetime(
+                editable_tracker["sent_date"],
+                errors="coerce"
+            ).dt.date
+
+            editable_tracker["billing_date"] = pd.to_datetime(
+                editable_tracker["billing_date"],
+                errors="coerce"
+            ).dt.date
+
+            editable_tracker = editable_tracker.drop(
+                columns=["sent_for_billing", "billing_done"],
+                errors="ignore"
+            )
+
+            tracker_display_columns = [
+                "id",
+                "allocation_date",
+                "po_no",
+                "order_id",
+                "buyer_code",
+                "fsn",
+                "title",
+                "rr_warehouse",
+                "fk_warehouse",
+                "sap_code",
+                "fcn",
+                "appointment_no",
+                "appointment_date",
+                "pending_amount",
+                "allocated_qty",
+                "billed_qty",
+                "balance_to_bill",
+                "sent_date",
+                "billing_date",
+                "invoice_no",
+                "remark",
+                "sent_for_billing_tick",
+                "billing_done_tick",
+            ]
+
+            tracker_display_columns = [
+                col for col in tracker_display_columns if col in editable_tracker.columns
+            ]
+
+            editable_tracker = editable_tracker[tracker_display_columns]
+
+            st.markdown("---")
+            st.subheader("Bulk Update")
+
+            select_all = st.checkbox("Select All Allocation Rows")
+
+            if select_all:
+                selected_ids = editable_tracker["id"].tolist()
+                st.info(f"{len(selected_ids)} rows selected.")
+            else:
+                selected_ids = st.multiselect(
+                    "Select Allocation IDs",
+                    options=editable_tracker["id"].tolist()
+                )
+
+            b1, b2, b3, b4 = st.columns(4)
+
+            with b1:
+                bulk_sent_tick = st.checkbox("Mark Sent for Billing")
+
+            with b2:
+                bulk_sent_date = st.date_input("Sent Date")
+
+            with b3:
+                bulk_billing_tick = st.checkbox("Mark Billing Done")
+
+            with b4:
+                bulk_billing_date = st.date_input("Billing Date")
+
+            b5, b6 = st.columns(2)
+
+            with b5:
+                bulk_invoice_no = st.text_input("Invoice No. Optional")
+
+            with b6:
+                bulk_remark = st.text_input("Remark Optional")
+
+            if st.button("Apply Bulk Update"):
+                if len(selected_ids) == 0:
+                    st.error("Please select at least one allocation row.")
+
+                elif not bulk_sent_tick and not bulk_billing_tick and bulk_invoice_no == "" and bulk_remark == "":
+                    st.error("Please choose at least one update action.")
+
+                else:
+                    for allocation_id in selected_ids:
+                        if bulk_sent_tick:
                             db_execute("""
                             UPDATE allocation_tracker
                             SET
-                                billing_done = :billing_done,
-                                billing_date = :billing_date,
-                                billed_qty = allocated_qty,
-                                balance_to_bill = 0
+                                sent_for_billing = :sent_for_billing,
+                                sent_date = :sent_date
                             WHERE id = :id
                             """, {
-                                "billing_done": "Yes",
-                                "billing_date": str(bulk_billing_date),
+                                "sent_for_billing": "Yes",
+                                "sent_date": str(bulk_sent_date),
                                 "id": int(allocation_id)
                             }, clear_cache=False)
 
-                        else:
+                        if bulk_billing_tick:
+                            if "billed_qty" in tracker.columns and "balance_to_bill" in tracker.columns:
+                                db_execute("""
+                                UPDATE allocation_tracker
+                                SET
+                                    billing_done = :billing_done,
+                                    billing_date = :billing_date,
+                                    billed_qty = allocated_qty,
+                                    balance_to_bill = 0
+                                WHERE id = :id
+                                """, {
+                                    "billing_done": "Yes",
+                                    "billing_date": str(bulk_billing_date),
+                                    "id": int(allocation_id)
+                                }, clear_cache=False)
+
+                            else:
+                                db_execute("""
+                                UPDATE allocation_tracker
+                                SET
+                                    billing_done = :billing_done,
+                                    billing_date = :billing_date
+                                WHERE id = :id
+                                """, {
+                                    "billing_done": "Yes",
+                                    "billing_date": str(bulk_billing_date),
+                                    "id": int(allocation_id)
+                                }, clear_cache=False)
+
+                        if bulk_invoice_no.strip() != "":
                             db_execute("""
                             UPDATE allocation_tracker
-                            SET
-                                billing_done = :billing_done,
-                                billing_date = :billing_date
+                            SET invoice_no = :invoice_no
                             WHERE id = :id
                             """, {
-                                "billing_done": "Yes",
-                                "billing_date": str(bulk_billing_date),
+                                "invoice_no": bulk_invoice_no,
                                 "id": int(allocation_id)
                             }, clear_cache=False)
 
-                    if bulk_invoice_no.strip() != "":
-                        db_execute("""
-                        UPDATE allocation_tracker
-                        SET invoice_no = :invoice_no
-                        WHERE id = :id
-                        """, {
-                            "invoice_no": bulk_invoice_no,
-                            "id": int(allocation_id)
-                        }, clear_cache=False)
+                        if bulk_remark.strip() != "":
+                            db_execute("""
+                            UPDATE allocation_tracker
+                            SET remark = :remark
+                            WHERE id = :id
+                            """, {
+                                "remark": bulk_remark,
+                                "id": int(allocation_id)
+                            }, clear_cache=False)
 
-                    if bulk_remark.strip() != "":
-                        db_execute("""
-                        UPDATE allocation_tracker
-                        SET remark = :remark
-                        WHERE id = :id
-                        """, {
-                            "remark": bulk_remark,
-                            "id": int(allocation_id)
-                        }, clear_cache=False)
+                    st.cache_data.clear()
+                    st.success("Bulk update applied successfully")
+                    st.rerun()
 
-                st.cache_data.clear()
-                st.success("Bulk update applied successfully")
-                st.rerun()
+            st.markdown("---")
 
-        st.markdown("---")
+            edited_df = st.data_editor(
+                editable_tracker,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "id": st.column_config.NumberColumn("ID", disabled=True),
+                    "allocation_date": st.column_config.TextColumn("Allocation Date", disabled=True),
+                    "po_no": st.column_config.TextColumn("PO No.", disabled=True),
+                    "order_id": st.column_config.TextColumn("Order ID", disabled=True),
+                    "buyer_code": st.column_config.TextColumn("Buyer Code", disabled=True),
+                    "fsn": st.column_config.TextColumn("FSN", disabled=True),
+                    "title": st.column_config.TextColumn("Title", disabled=True),
+                    "rr_warehouse": st.column_config.TextColumn("RR Warehouse", disabled=True),
+                    "fk_warehouse": st.column_config.TextColumn("FK Warehouse", disabled=True),
+                    "sap_code": st.column_config.TextColumn("SAP Code", disabled=True),
+                    "fcn": st.column_config.TextColumn("FCN", disabled=True),
+                    "appointment_no": st.column_config.TextColumn("Appointment No.", disabled=True),
+                    "appointment_date": st.column_config.TextColumn("Appointment Date", disabled=True),
+                    "pending_amount": st.column_config.NumberColumn("Pending Amount", disabled=True),
+                    "allocated_qty": st.column_config.NumberColumn("Allocated Qty.", disabled=True),
+                    "billed_qty": st.column_config.NumberColumn("Billed Qty."),
+                    "balance_to_bill": st.column_config.NumberColumn("Balance To Bill", disabled=True),
+                    "sent_date": st.column_config.DateColumn("Sent Date", format="DD-MM-YYYY"),
+                    "billing_date": st.column_config.DateColumn("Billing Date", format="DD-MM-YYYY"),
+                    "invoice_no": st.column_config.TextColumn("Invoice No."),
+                    "remark": st.column_config.TextColumn("Remark"),
+                    "sent_for_billing_tick": st.column_config.CheckboxColumn("Sent for Billing?"),
+                    "billing_done_tick": st.column_config.CheckboxColumn("Billing Done?")
+                }
+            )
 
-        edited_df = st.data_editor(
-            editable_tracker,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "id": st.column_config.NumberColumn("ID", disabled=True),
-                "allocation_date": st.column_config.TextColumn("Allocation Date", disabled=True),
-                "po_no": st.column_config.TextColumn("PO No.", disabled=True),
-                "order_id": st.column_config.TextColumn("Order ID", disabled=True),
-                "buyer_code": st.column_config.TextColumn("Buyer Code", disabled=True),
-                "fsn": st.column_config.TextColumn("FSN", disabled=True),
-                "title": st.column_config.TextColumn("Title", disabled=True),
-                "rr_warehouse": st.column_config.TextColumn("RR Warehouse", disabled=True),
-                "fk_warehouse": st.column_config.TextColumn("FK Warehouse", disabled=True),
-                "sap_code": st.column_config.TextColumn("SAP Code", disabled=True),
-                "fcn": st.column_config.TextColumn("FCN", disabled=True),
-                "appointment_no": st.column_config.TextColumn("Appointment No.", disabled=True),
-                "appointment_date": st.column_config.TextColumn("Appointment Date", disabled=True),
-                "pending_amount": st.column_config.NumberColumn("Pending Amount", disabled=True),
-                "allocated_qty": st.column_config.NumberColumn("Allocated Qty.", disabled=True),
-                "billed_qty": st.column_config.NumberColumn("Billed Qty."),
-                "balance_to_bill": st.column_config.NumberColumn("Balance To Bill", disabled=True),
-                "sent_date": st.column_config.DateColumn("Sent Date", format="DD-MM-YYYY"),
-                "billing_date": st.column_config.DateColumn("Billing Date", format="DD-MM-YYYY"),
-                "invoice_no": st.column_config.TextColumn("Invoice No."),
-                "remark": st.column_config.TextColumn("Remark"),
-                "sent_for_billing_tick": st.column_config.CheckboxColumn("Sent for Billing?"),
-                "billing_done_tick": st.column_config.CheckboxColumn("Billing Done?")
-            }
-        )
+            if st.button("Save Manual Table Updates"):
+                for _, row in edited_df.iterrows():
+                    sent_value = "Yes" if row["sent_for_billing_tick"] else "No"
+                    billed_value = "Yes" if row["billing_done_tick"] else "No"
+                    manual_billed_qty = clean_number(row.get("billed_qty", 0))
+                    manual_allocated_qty = clean_number(row.get("allocated_qty", 0))
+                    manual_balance_to_bill = max(manual_allocated_qty - manual_billed_qty, 0)
 
-        if st.button("Save Manual Table Updates"):
-            for _, row in edited_df.iterrows():
-                sent_value = "Yes" if row["sent_for_billing_tick"] else "No"
-                billed_value = "Yes" if row["billing_done_tick"] else "No"
-                manual_billed_qty = clean_number(row.get("billed_qty", 0))
-                manual_allocated_qty = clean_number(row.get("allocated_qty", 0))
-                manual_balance_to_bill = max(manual_allocated_qty - manual_billed_qty, 0)
+                    if "billed_qty" in edited_df.columns:
+                        billed_value = "Yes" if manual_balance_to_bill <= 0 and manual_allocated_qty > 0 else "No"
 
-                if "billed_qty" in edited_df.columns:
-                    billed_value = "Yes" if manual_balance_to_bill <= 0 and manual_allocated_qty > 0 else "No"
-
-                db_execute("""
-                UPDATE allocation_tracker
-                SET
-                    sent_for_billing = :sent_for_billing,
-                    sent_date = :sent_date,
-                    billing_done = :billing_done,
-                    billing_date = :billing_date,
-                    invoice_no = :invoice_no,
-                    remark = :remark
-                WHERE id = :id
-                """, {
-                    "sent_for_billing": sent_value,
-                    "sent_date": str(row["sent_date"]) if pd.notna(row["sent_date"]) else "",
-                    "billing_done": billed_value,
-                    "billing_date": str(row["billing_date"]) if pd.notna(row["billing_date"]) else "",
-                    "invoice_no": row["invoice_no"],
-                    "remark": row["remark"],
-                    "id": int(row["id"])
-                }, clear_cache=False)
-
-                if "billed_qty" in edited_df.columns and "balance_to_bill" in tracker.columns:
                     db_execute("""
                     UPDATE allocation_tracker
                     SET
-                        billed_qty = :billed_qty,
-                        balance_to_bill = :balance_to_bill
+                        sent_for_billing = :sent_for_billing,
+                        sent_date = :sent_date,
+                        billing_done = :billing_done,
+                        billing_date = :billing_date,
+                        invoice_no = :invoice_no,
+                        remark = :remark
                     WHERE id = :id
                     """, {
-                        "billed_qty": manual_billed_qty,
-                        "balance_to_bill": manual_balance_to_bill,
+                        "sent_for_billing": sent_value,
+                        "sent_date": str(row["sent_date"]) if pd.notna(row["sent_date"]) else "",
+                        "billing_done": billed_value,
+                        "billing_date": str(row["billing_date"]) if pd.notna(row["billing_date"]) else "",
+                        "invoice_no": row["invoice_no"],
+                        "remark": row["remark"],
                         "id": int(row["id"])
                     }, clear_cache=False)
 
-            st.cache_data.clear()
-            st.success("Manual tracker updates saved successfully")
-            st.rerun()
+                    if "billed_qty" in edited_df.columns and "balance_to_bill" in tracker.columns:
+                        db_execute("""
+                        UPDATE allocation_tracker
+                        SET
+                            billed_qty = :billed_qty,
+                            balance_to_bill = :balance_to_bill
+                        WHERE id = :id
+                        """, {
+                            "billed_qty": manual_billed_qty,
+                            "balance_to_bill": manual_balance_to_bill,
+                            "id": int(row["id"])
+                        }, clear_cache=False)
+
+                st.cache_data.clear()
+                st.success("Manual tracker updates saved successfully")
+                st.rerun()
 
 
 # =====================================================
