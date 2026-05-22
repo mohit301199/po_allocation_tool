@@ -1649,17 +1649,9 @@ def apply_tracker_correction_upload(uploaded_df):
     if "Action" not in correction_df.columns:
         correction_df["Action"] = "Replace"
 
-    tracker_df = get_tracker_df()
-
-    if tracker_df.empty:
-        return {
-            "inserted_rows": 0,
-            "replaced_rows": 0,
-            "deleted_rows": 0,
-            "error_rows": pd.DataFrame([{"Error": "No tracker rows found."}])
-        }
-
     tracker_columns = get_allocation_tracker_columns()
+
+    tracker_df = get_tracker_df()
     tracker_by_id = {
         int(row["id"]): row
         for _, row in tracker_df.iterrows()
@@ -1991,6 +1983,88 @@ def apply_tracker_correction_upload(uploaded_df):
         "deleted_rows": deleted_rows,
         "error_rows": pd.DataFrame(errors)
     }
+
+
+def render_full_tracker_correction_upload(tracker):
+    if st.session_state.role != "Admin":
+        return
+
+    st.markdown("---")
+    st.subheader("Full Tracker Correction Upload")
+    st.caption(
+        "Admin only. Use this to load corrected opening tracker data after reset, "
+        "or to fix allocation, billed qty., remaining qty., invoice, or status. "
+        "Action can be New, Replace, or Delete."
+    )
+
+    correction_template = get_tracker_correction_template_df(tracker)
+
+    with st.expander("Correction upload format"):
+        st.dataframe(correction_template.head(25), use_container_width=True)
+        st.download_button(
+            "Download Full Correction Template",
+            data=to_excel(correction_template),
+            file_name="full_tracker_correction_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    correction_file = st.file_uploader(
+        "Upload Full Tracker Correction File",
+        type=["xlsx"],
+        key="full_tracker_correction_file"
+    )
+
+    if correction_file is not None:
+        correction_uploaded_df, correction_read_error = read_uploaded_excel(
+            correction_file,
+            "Full Tracker Correction file"
+        )
+
+        if correction_read_error:
+            st.error(correction_read_error)
+
+        else:
+            st.write(f"Rows in uploaded file: {len(correction_uploaded_df):,}")
+            st.dataframe(correction_uploaded_df.head(25), use_container_width=True)
+
+            confirm_correction = st.checkbox(
+                "I understand this will insert, replace, or delete tracker records",
+                key="confirm_full_tracker_correction"
+            )
+
+            if st.button("Apply Full Tracker Correction Upload"):
+                if not confirm_correction:
+                    st.error("Please confirm before applying tracker corrections.")
+
+                else:
+                    correction_result = apply_tracker_correction_upload(correction_uploaded_df)
+
+                    if not correction_result["error_rows"].empty:
+                        st.warning(
+                            f"{len(correction_result['error_rows'])} rows could not be corrected. "
+                            "Please fix them and upload again."
+                        )
+                        st.dataframe(correction_result["error_rows"], use_container_width=True)
+                        st.download_button(
+                            "Download Correction Errors",
+                            data=to_excel(correction_result["error_rows"]),
+                            file_name="tracker_correction_errors.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        )
+
+                    changed_rows = (
+                        correction_result["inserted_rows"] +
+                        correction_result["replaced_rows"] +
+                        correction_result["deleted_rows"]
+                    )
+
+                    if changed_rows > 0:
+                        st.success(
+                            f"{correction_result['inserted_rows']} rows inserted, "
+                            f"{correction_result['replaced_rows']} rows replaced, and "
+                            f"{correction_result['deleted_rows']} rows deleted successfully"
+                        )
+                        st.rerun()
 
 
 # =====================================================
@@ -3116,6 +3190,7 @@ elif menu == "Allocation Tracker":
 
     if tracker.empty:
         st.info("No allocation records found.")
+        render_full_tracker_correction_upload(tracker)
 
     else:
         sent_for_billing_export = get_sent_for_billing_download_df(tracker)
@@ -3194,82 +3269,7 @@ elif menu == "Allocation Tracker":
                         st.success(f"{update_result['updated_rows']} tracker rows updated successfully")
                         st.rerun()
 
-        if st.session_state.role == "Admin":
-            st.markdown("---")
-            st.subheader("Full Tracker Correction Upload")
-            st.caption(
-                "Admin only. Use this when allocation, billed qty., remaining qty., invoice, "
-                "or status was wrongly updated. Action can be New, Replace, or Delete."
-            )
-
-            correction_template = get_tracker_correction_template_df(tracker)
-
-            with st.expander("Correction upload format"):
-                st.dataframe(correction_template.head(25), use_container_width=True)
-                st.download_button(
-                    "Download Full Correction Template",
-                    data=to_excel(correction_template),
-                    file_name="full_tracker_correction_template.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
-            correction_file = st.file_uploader(
-                "Upload Full Tracker Correction File",
-                type=["xlsx"],
-                key="full_tracker_correction_file"
-            )
-
-            if correction_file is not None:
-                correction_uploaded_df, correction_read_error = read_uploaded_excel(
-                    correction_file,
-                    "Full Tracker Correction file"
-                )
-
-                if correction_read_error:
-                    st.error(correction_read_error)
-
-                else:
-                    st.write(f"Rows in uploaded file: {len(correction_uploaded_df):,}")
-                    st.dataframe(correction_uploaded_df.head(25), use_container_width=True)
-
-                    confirm_correction = st.checkbox(
-                        "I understand this will insert, replace, or delete tracker records",
-                        key="confirm_full_tracker_correction"
-                    )
-
-                    if st.button("Apply Full Tracker Correction Upload"):
-                        if not confirm_correction:
-                            st.error("Please confirm before applying tracker corrections.")
-
-                        else:
-                            correction_result = apply_tracker_correction_upload(correction_uploaded_df)
-
-                            if not correction_result["error_rows"].empty:
-                                st.warning(
-                                    f"{len(correction_result['error_rows'])} rows could not be corrected. "
-                                    "Please fix them and upload again."
-                                )
-                                st.dataframe(correction_result["error_rows"], use_container_width=True)
-                                st.download_button(
-                                    "Download Correction Errors",
-                                    data=to_excel(correction_result["error_rows"]),
-                                    file_name="tracker_correction_errors.xlsx",
-                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                )
-
-                            changed_rows = (
-                                correction_result["inserted_rows"] +
-                                correction_result["replaced_rows"] +
-                                correction_result["deleted_rows"]
-                            )
-
-                            if changed_rows > 0:
-                                st.success(
-                                    f"{correction_result['inserted_rows']} rows inserted, "
-                                    f"{correction_result['replaced_rows']} rows replaced, and "
-                                    f"{correction_result['deleted_rows']} rows deleted successfully"
-                                )
-                                st.rerun()
+        render_full_tracker_correction_upload(tracker)
 
         st.markdown("---")
         st.subheader("Emergency Manual Allocation Upload")
