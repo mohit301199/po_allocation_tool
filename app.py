@@ -1584,6 +1584,23 @@ def get_tracker_correction_template_df(tracker_df):
                 errors="coerce"
             ).dt.strftime("%Y-%m-%d").fillna("")
 
+    new_row = {col: "" for col in template_df.columns}
+    new_row["Action"] = "New"
+
+    if "Allocated Qty." in new_row:
+        new_row["Allocated Qty."] = 0
+
+    if "Billed Qty." in new_row:
+        new_row["Billed Qty."] = 0
+
+    if "Remaining Qty." in new_row:
+        new_row["Remaining Qty."] = 0
+
+    template_df = pd.concat(
+        [pd.DataFrame([new_row]), template_df],
+        ignore_index=True
+    )
+
     return template_df
 
 
@@ -1627,11 +1644,7 @@ def apply_tracker_correction_upload(uploaded_df):
     correction_df = correction_df.rename(columns=rename_map)
 
     if "Tracker ID" not in correction_df.columns:
-        return {
-            "replaced_rows": 0,
-            "deleted_rows": 0,
-            "error_rows": pd.DataFrame([{"Error": "Missing required column: Tracker ID"}])
-        }
+        correction_df["Tracker ID"] = ""
 
     if "Action" not in correction_df.columns:
         correction_df["Action"] = "Replace"
@@ -1640,6 +1653,7 @@ def apply_tracker_correction_upload(uploaded_df):
 
     if tracker_df.empty:
         return {
+            "inserted_rows": 0,
             "replaced_rows": 0,
             "deleted_rows": 0,
             "error_rows": pd.DataFrame([{"Error": "No tracker rows found."}])
@@ -1682,39 +1696,186 @@ def apply_tracker_correction_upload(uploaded_df):
 
     replaced_rows = 0
     deleted_rows = 0
+    inserted_rows = 0
     errors = []
 
     for row_no, row in correction_df.iterrows():
-        try:
-            tracker_id = int(clean_number(row["Tracker ID"]))
-        except Exception:
-            errors.append({
-                "Excel Row": row_no + 2,
-                "Tracker ID": row.get("Tracker ID", ""),
-                "Error": "Invalid Tracker ID"
-            })
-            continue
-
         action = clean_text(row.get("Action", "Replace")).lower()
 
         if action in ["delete", "remove", "deleted"]:
             action = "delete"
+        elif action in ["new", "insert", "add", "create"]:
+            action = "new"
         elif action in ["replace", "update", "correct", "correction", ""]:
             action = "replace"
         else:
             errors.append({
                 "Excel Row": row_no + 2,
-                "Tracker ID": tracker_id,
-                "Error": "Action must be Replace or Delete"
+                "Tracker ID": row.get("Tracker ID", ""),
+                "Error": "Action must be New, Replace, or Delete"
             })
             continue
 
-        if tracker_id not in tracker_by_id:
+        tracker_id = int(clean_number(row["Tracker ID"]))
+
+        if action != "new" and tracker_id <= 0:
+            errors.append({
+                "Excel Row": row_no + 2,
+                "Tracker ID": row.get("Tracker ID", ""),
+                "Error": "Tracker ID is required for Replace/Delete"
+            })
+            continue
+
+        if action != "new" and tracker_id not in tracker_by_id:
             errors.append({
                 "Excel Row": row_no + 2,
                 "Tracker ID": tracker_id,
                 "Error": "Tracker ID not found"
             })
+            continue
+
+        if action == "new":
+            required_new_cols = [
+                "PO No.",
+                "FSN",
+                "Title",
+                "RR Warehouse",
+                "FK Warehouse",
+                "SAP Code",
+                "Allocated Qty.",
+            ]
+            missing_new_cols = [
+                col
+                for col in required_new_cols
+                if col not in correction_df.columns or clean_text(row.get(col, "")) == ""
+            ]
+
+            if missing_new_cols:
+                errors.append({
+                    "Excel Row": row_no + 2,
+                    "Tracker ID": row.get("Tracker ID", ""),
+                    "Error": f"New row missing required columns: {missing_new_cols}"
+                })
+                continue
+
+            new_values = {}
+            insert_columns = []
+
+            for db_col, upload_col in replace_map.items():
+                if db_col not in tracker_columns or upload_col not in correction_df.columns:
+                    continue
+
+                raw_value = row.get(upload_col, "")
+
+                if db_col in numeric_columns:
+                    value = clean_number(raw_value)
+                elif db_col in date_columns:
+                    value, date_error = parse_upload_date(raw_value)
+
+                    if date_error:
+                        errors.append({
+                            "Excel Row": row_no + 2,
+                            "Tracker ID": row.get("Tracker ID", ""),
+                            "Error": date_error
+                        })
+                        break
+                elif db_col in yes_no_columns:
+                    value = normalize_yes_no(raw_value)
+
+                    if value == "":
+                        value = "No"
+                else:
+                    value = clean_text(raw_value)
+
+                new_values[db_col] = value
+                insert_columns.append(db_col)
+
+            else:
+                allocated_qty = clean_number(new_values.get("allocated_qty", 0))
+                billed_qty = clean_number(new_values.get("billed_qty", 0))
+
+                if allocated_qty <= 0:
+                    errors.append({
+                        "Excel Row": row_no + 2,
+                        "Tracker ID": row.get("Tracker ID", ""),
+                        "Error": "Allocated Qty. must be greater than 0 for New rows"
+                    })
+                    continue
+
+                if billed_qty < 0 or billed_qty > allocated_qty:
+                    errors.append({
+                        "Excel Row": row_no + 2,
+                        "Tracker ID": row.get("Tracker ID", ""),
+                        "Error": "Billed Qty. cannot be negative or greater than Allocated Qty."
+                    })
+                    continue
+
+                if "allocation_date" in tracker_columns and clean_text(new_values.get("allocation_date", "")) == "":
+                    new_values["allocation_date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                    if "allocation_date" not in insert_columns:
+                        insert_columns.append("allocation_date")
+
+                if "balance_to_bill" in tracker_columns:
+                    remaining_raw = clean_text(row.get("Remaining Qty.", ""))
+                    new_values["balance_to_bill"] = (
+                        clean_number(row.get("Remaining Qty.", 0))
+                        if remaining_raw != ""
+                        else max(allocated_qty - billed_qty, 0)
+                    )
+
+                    if "balance_to_bill" not in insert_columns:
+                        insert_columns.append("balance_to_bill")
+
+                balance_to_bill = clean_number(new_values.get("balance_to_bill", max(allocated_qty - billed_qty, 0)))
+
+                if balance_to_bill < 0:
+                    errors.append({
+                        "Excel Row": row_no + 2,
+                        "Tracker ID": row.get("Tracker ID", ""),
+                        "Error": "Remaining Qty. cannot be negative"
+                    })
+                    continue
+
+                if "billing_done" in tracker_columns:
+                    new_values["billing_done"] = "Yes" if balance_to_bill <= 0 and allocated_qty > 0 else "No"
+
+                    if "billing_done" not in insert_columns:
+                        insert_columns.append("billing_done")
+
+                if "sent_for_billing" in tracker_columns:
+                    invoice_no = clean_text(new_values.get("invoice_no", ""))
+
+                    if billed_qty > 0 or invoice_no != "" or new_values.get("billing_done", "") == "Yes":
+                        new_values["sent_for_billing"] = "Yes"
+                    elif clean_text(new_values.get("sent_for_billing", "")) == "":
+                        new_values["sent_for_billing"] = "No"
+
+                    if "sent_for_billing" not in insert_columns:
+                        insert_columns.append("sent_for_billing")
+
+                if "billing_source" in tracker_columns:
+                    new_values["billing_source"] = "Full Tracker Correction Upload"
+                    insert_columns.append("billing_source")
+
+                if "remark" in tracker_columns and clean_text(new_values.get("remark", "")) == "":
+                    new_values["remark"] = "Inserted by full tracker correction upload"
+
+                    if "remark" not in insert_columns:
+                        insert_columns.append("remark")
+
+                insert_columns = list(dict.fromkeys(insert_columns))
+                value_keys = [f":{col}" for col in insert_columns]
+
+                db_execute(f"""
+                INSERT INTO allocation_tracker ({", ".join(insert_columns)})
+                VALUES ({", ".join(value_keys)})
+                """, new_values)
+
+                log_activity("tracker_correction_new", "Inserted new allocation row from correction upload")
+                inserted_rows += 1
+                continue
+
             continue
 
         if action == "delete":
@@ -1825,6 +1986,7 @@ def apply_tracker_correction_upload(uploaded_df):
             replaced_rows += 1
 
     return {
+        "inserted_rows": inserted_rows,
         "replaced_rows": replaced_rows,
         "deleted_rows": deleted_rows,
         "error_rows": pd.DataFrame(errors)
@@ -3037,7 +3199,7 @@ elif menu == "Allocation Tracker":
             st.subheader("Full Tracker Correction Upload")
             st.caption(
                 "Admin only. Use this when allocation, billed qty., remaining qty., invoice, "
-                "or status was wrongly updated. Action must be Replace or Delete."
+                "or status was wrongly updated. Action can be New, Replace, or Delete."
             )
 
             correction_template = get_tracker_correction_template_df(tracker)
@@ -3071,7 +3233,7 @@ elif menu == "Allocation Tracker":
                     st.dataframe(correction_uploaded_df.head(25), use_container_width=True)
 
                     confirm_correction = st.checkbox(
-                        "I understand this will replace or delete existing tracker records",
+                        "I understand this will insert, replace, or delete tracker records",
                         key="confirm_full_tracker_correction"
                     )
 
@@ -3096,13 +3258,15 @@ elif menu == "Allocation Tracker":
                                 )
 
                             changed_rows = (
+                                correction_result["inserted_rows"] +
                                 correction_result["replaced_rows"] +
                                 correction_result["deleted_rows"]
                             )
 
                             if changed_rows > 0:
                                 st.success(
-                                    f"{correction_result['replaced_rows']} rows replaced and "
+                                    f"{correction_result['inserted_rows']} rows inserted, "
+                                    f"{correction_result['replaced_rows']} rows replaced, and "
                                     f"{correction_result['deleted_rows']} rows deleted successfully"
                                 )
                                 st.rerun()
