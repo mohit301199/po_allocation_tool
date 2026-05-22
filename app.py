@@ -1217,6 +1217,238 @@ def apply_billing_update_upload(uploaded_df):
     }
 
 
+def verify_sales_billing_against_tracker(uploaded_df, tracker_df):
+    sales_df = normalize_columns(uploaded_df)
+
+    aliases = {
+        "PO No.": ["PO No", "PO No.", "PO", "PONo"],
+        "FSN": ["FSN"],
+        "SAP Code": ["Item", "SAP Code", "Item Code"],
+        "RR Warehouse": ["Site", "RR Warehouse", "RR WH"],
+        "Invoice No.": ["GST Invoice No", "GST Invoice No.", "Invoice No.", "Invoice No"],
+        "Invoice Date": ["Invoice Date", "Billing Date"],
+        "Dispatch Qty": ["Dispatch Qty", "Dispatch Qty.", "Billed Qty.", "Billing Qty"],
+        "Dispatch Amount": ["Dispatch Amount", "Dispatch Amount."],
+        "Sales Id": ["Sales Id", "Sales ID", "Order ID"],
+        "Item Name": ["Item Name", "Title"],
+    }
+
+    rename_map = {}
+
+    for target_col, options in aliases.items():
+        found_col = first_existing_column(sales_df, options)
+        if found_col:
+            rename_map[found_col] = target_col
+
+    sales_df = sales_df.rename(columns=rename_map)
+
+    required_cols = [
+        "PO No.",
+        "FSN",
+        "SAP Code",
+        "RR Warehouse",
+        "Invoice No.",
+        "Invoice Date",
+        "Dispatch Qty",
+    ]
+    missing_cols = [col for col in required_cols if col not in sales_df.columns]
+
+    if missing_cols:
+        return {
+            "summary": pd.DataFrame([{"Error": f"Missing required sales columns: {missing_cols}"}]),
+            "matches": pd.DataFrame(),
+            "exceptions": pd.DataFrame(),
+            "unmatched_sales": pd.DataFrame(),
+        }
+
+    for col in ["PO No.", "FSN", "SAP Code", "RR Warehouse", "Invoice No."]:
+        sales_df[col] = sales_df[col].apply(clean_text)
+
+    for col in ["PO No.", "FSN", "SAP Code", "RR Warehouse"]:
+        sales_df[col] = sales_df[col].str.upper()
+
+    sales_df["Dispatch Qty"] = sales_df["Dispatch Qty"].apply(clean_number)
+    sales_df["Invoice Date"] = pd.to_datetime(
+        sales_df["Invoice Date"],
+        errors="coerce"
+    ).dt.strftime("%Y-%m-%d").fillna("")
+
+    if "Dispatch Amount" in sales_df.columns:
+        sales_df["Dispatch Amount"] = sales_df["Dispatch Amount"].apply(clean_number)
+    else:
+        sales_df["Dispatch Amount"] = 0
+
+    positive_sales_df = sales_df[sales_df["Dispatch Qty"] > 0].copy()
+
+    key_cols = ["PO No.", "FSN", "SAP Code", "RR Warehouse"]
+
+    sales_grouped = positive_sales_df.groupby(
+        key_cols,
+        dropna=False
+    ).agg(
+        sales_billed_qty=("Dispatch Qty", "sum"),
+        sales_dispatch_amount=("Dispatch Amount", "sum"),
+        invoice_no=("Invoice No.", lambda values: ", ".join(
+            sorted(set(clean_text(v) for v in values if clean_text(v) != ""))
+        )),
+        invoice_count=("Invoice No.", "nunique"),
+        latest_invoice_date=("Invoice Date", "max"),
+        sales_rows=("FSN", "size"),
+    ).reset_index()
+
+    tracker_norm = tracker_df.copy()
+
+    for col in ["po_no", "fsn", "sap_code", "rr_warehouse"]:
+        if col not in tracker_norm.columns:
+            tracker_norm[col] = ""
+        tracker_norm[col] = tracker_norm[col].apply(clean_text).str.upper()
+
+    for col in ["allocated_qty", "billed_qty", "balance_to_bill"]:
+        if col not in tracker_norm.columns:
+            tracker_norm[col] = 0
+        tracker_norm[col] = tracker_norm[col].apply(clean_number)
+
+    tracker_norm["tracker_key_count"] = tracker_norm.groupby(
+        ["po_no", "fsn", "sap_code", "rr_warehouse"]
+    )["id"].transform("count")
+
+    compare_df = tracker_norm.merge(
+        sales_grouped,
+        how="left",
+        left_on=["po_no", "fsn", "sap_code", "rr_warehouse"],
+        right_on=["PO No.", "FSN", "SAP Code", "RR Warehouse"]
+    )
+
+    compare_df["sales_billed_qty"] = compare_df["sales_billed_qty"].fillna(0)
+    compare_df["sales_dispatch_amount"] = compare_df["sales_dispatch_amount"].fillna(0)
+    compare_df["invoice_no"] = compare_df["invoice_no"].fillna("")
+    compare_df["latest_invoice_date"] = compare_df["latest_invoice_date"].fillna("")
+    compare_df["invoice_count"] = compare_df["invoice_count"].fillna(0).astype(int)
+    compare_df["sales_rows"] = compare_df["sales_rows"].fillna(0).astype(int)
+    compare_df["qty_difference"] = compare_df["billed_qty"] - compare_df["sales_billed_qty"]
+    compare_df["sales_balance_to_bill"] = (
+        compare_df["allocated_qty"] - compare_df["sales_billed_qty"]
+    ).apply(lambda value: max(value, 0))
+
+    def verification_status(row):
+        if clean_number(row["sales_billed_qty"]) <= 0 and clean_number(row["billed_qty"]) <= 0:
+            return "No Billing In Tracker Or Sales"
+        if clean_number(row["sales_billed_qty"]) <= 0 and clean_number(row["billed_qty"]) > 0:
+            return "Tracker Billed But Sales Not Found"
+        if clean_number(row["sales_billed_qty"]) > clean_number(row["allocated_qty"]):
+            return "Sales Qty More Than Allocated"
+        if clean_number(row["tracker_key_count"]) > 1:
+            return "Duplicate Tracker Key - Review Before Auto Update"
+        if clean_number(row["qty_difference"]) == 0:
+            return "Matched"
+        return "Qty Mismatch"
+
+    compare_df["Verification Status"] = compare_df.apply(verification_status, axis=1)
+
+    match_columns = [
+        "id",
+        "po_no",
+        "fsn",
+        "sap_code",
+        "rr_warehouse",
+        "allocated_qty",
+        "billed_qty",
+        "sales_billed_qty",
+        "sales_balance_to_bill",
+        "qty_difference",
+        "invoice_no",
+        "latest_invoice_date",
+        "invoice_count",
+        "sales_rows",
+        "tracker_key_count",
+        "billing_done",
+        "Verification Status",
+    ]
+    match_columns = [col for col in match_columns if col in compare_df.columns]
+
+    comparison_output = compare_df[match_columns].rename(columns={
+        "id": "Tracker ID",
+        "po_no": "PO No.",
+        "fsn": "FSN",
+        "sap_code": "SAP Code",
+        "rr_warehouse": "RR Warehouse",
+        "allocated_qty": "Allocated Qty.",
+        "billed_qty": "Tracker Billed Qty.",
+        "sales_billed_qty": "Sales Billed Qty.",
+        "sales_balance_to_bill": "Sales Balance To Bill",
+        "qty_difference": "Tracker - Sales Diff",
+        "invoice_no": "Sales Invoice No.",
+        "latest_invoice_date": "Latest Sales Invoice Date",
+        "invoice_count": "Invoice Count",
+        "sales_rows": "Sales Rows",
+        "tracker_key_count": "Tracker Key Count",
+        "billing_done": "Tracker Billing Done",
+    })
+
+    matches = comparison_output[
+        comparison_output["Verification Status"] == "Matched"
+    ].copy()
+
+    exceptions = comparison_output[
+        comparison_output["Verification Status"].isin([
+            "Tracker Billed But Sales Not Found",
+            "Sales Qty More Than Allocated",
+            "Duplicate Tracker Key - Review Before Auto Update",
+            "Qty Mismatch",
+        ])
+    ].copy()
+
+    sales_matched = sales_grouped.merge(
+        tracker_norm[["id", "po_no", "fsn", "sap_code", "rr_warehouse"]],
+        how="left",
+        left_on=["PO No.", "FSN", "SAP Code", "RR Warehouse"],
+        right_on=["po_no", "fsn", "sap_code", "rr_warehouse"]
+    )
+
+    unmatched_sales = sales_matched[sales_matched["id"].isna()].copy()
+    unmatched_sales = unmatched_sales[
+        [
+            "PO No.",
+            "FSN",
+            "SAP Code",
+            "RR Warehouse",
+            "sales_billed_qty",
+            "sales_dispatch_amount",
+            "invoice_no",
+            "latest_invoice_date",
+            "invoice_count",
+            "sales_rows",
+        ]
+    ].rename(columns={
+        "sales_billed_qty": "Sales Billed Qty.",
+        "sales_dispatch_amount": "Sales Dispatch Amount",
+        "invoice_no": "Sales Invoice No.",
+        "latest_invoice_date": "Latest Sales Invoice Date",
+        "invoice_count": "Invoice Count",
+        "sales_rows": "Sales Rows",
+    })
+
+    summary = pd.DataFrame([
+        {"Metric": "Sales file total rows", "Value": len(sales_df)},
+        {"Metric": "Positive dispatch rows used", "Value": len(positive_sales_df)},
+        {"Metric": "Negative/zero dispatch rows ignored", "Value": len(sales_df) - len(positive_sales_df)},
+        {"Metric": "Grouped sales billing keys", "Value": len(sales_grouped)},
+        {"Metric": "Tracker rows checked", "Value": len(tracker_norm)},
+        {"Metric": "Matched rows", "Value": len(matches)},
+        {"Metric": "Exception rows", "Value": len(exceptions)},
+        {"Metric": "Unmatched sales billing keys", "Value": len(unmatched_sales)},
+        {"Metric": "Tracker billed qty total", "Value": tracker_norm["billed_qty"].sum()},
+        {"Metric": "Matched sales billed qty total", "Value": comparison_output["Sales Billed Qty."].sum() if not comparison_output.empty else 0},
+    ])
+
+    return {
+        "summary": summary,
+        "matches": matches,
+        "exceptions": exceptions,
+        "unmatched_sales": unmatched_sales,
+    }
+
+
 def prepare_appointment_upload(uploaded_df):
     upload_df = normalize_columns(uploaded_df)
 
@@ -3268,6 +3500,90 @@ elif menu == "Allocation Tracker":
                         )
                         st.success(f"{update_result['updated_rows']} tracker rows updated successfully")
                         st.rerun()
+
+        st.markdown("---")
+        st.subheader("Sales Billing Verification Upload")
+        st.caption(
+            "Verification only. Upload the system sales file to compare invoice billing "
+            "against tracker billed qty. This does not update tracker data."
+        )
+
+        sales_verification_file = st.file_uploader(
+            "Upload Sales File For Verification",
+            type=["xlsx"],
+            key="sales_verification_file"
+        )
+
+        if sales_verification_file is not None:
+            sales_uploaded_df, sales_read_error = read_uploaded_excel(
+                sales_verification_file,
+                "Sales Verification file"
+            )
+
+            if sales_read_error:
+                st.error(sales_read_error)
+
+            else:
+                verification_result = verify_sales_billing_against_tracker(
+                    sales_uploaded_df,
+                    tracker
+                )
+
+                st.markdown("#### Verification Summary")
+                st.dataframe(
+                    verification_result["summary"],
+                    use_container_width=True
+                )
+
+                if not verification_result["exceptions"].empty:
+                    st.markdown("#### Exceptions To Review")
+                    st.warning(
+                        f"{len(verification_result['exceptions'])} tracker rows need review before automation."
+                    )
+                    st.dataframe(
+                        verification_result["exceptions"],
+                        use_container_width=True
+                    )
+                    st.download_button(
+                        "Download Sales Verification Exceptions",
+                        data=to_excel(verification_result["exceptions"]),
+                        file_name="sales_billing_verification_exceptions.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+
+                else:
+                    st.success("No tracker billing exceptions found.")
+
+                if not verification_result["unmatched_sales"].empty:
+                    st.markdown("#### Sales Rows Not Found In Tracker")
+                    st.info(
+                        f"{len(verification_result['unmatched_sales'])} sales billing keys did not match tracker."
+                    )
+                    st.dataframe(
+                        verification_result["unmatched_sales"],
+                        use_container_width=True
+                    )
+                    st.download_button(
+                        "Download Unmatched Sales Rows",
+                        data=to_excel(verification_result["unmatched_sales"]),
+                        file_name="sales_rows_not_found_in_tracker.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+
+                st.markdown("#### Matched Rows")
+                if verification_result["matches"].empty:
+                    st.info("No exact matched billing rows found.")
+                else:
+                    st.dataframe(
+                        verification_result["matches"],
+                        use_container_width=True
+                    )
+                    st.download_button(
+                        "Download Matched Sales Verification Rows",
+                        data=to_excel(verification_result["matches"]),
+                        file_name="sales_billing_verification_matches.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
 
         render_full_tracker_correction_upload(tracker)
 
