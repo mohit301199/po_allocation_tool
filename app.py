@@ -1288,11 +1288,11 @@ def verify_sales_billing_against_tracker(uploaded_df, tracker_df):
     ).agg(
         sales_billed_qty=("Dispatch Qty", "sum"),
         sales_dispatch_amount=("Dispatch Amount", "sum"),
-        invoice_no=("Invoice No.", lambda values: ", ".join(
+        sales_invoice_no=("Invoice No.", lambda values: ", ".join(
             sorted(set(clean_text(v) for v in values if clean_text(v) != ""))
         )),
-        invoice_count=("Invoice No.", "nunique"),
-        latest_invoice_date=("Invoice Date", "max"),
+        sales_invoice_count=("Invoice No.", "nunique"),
+        latest_sales_invoice_date=("Invoice Date", "max"),
         sales_rows=("FSN", "size"),
     ).reset_index()
 
@@ -1321,9 +1321,9 @@ def verify_sales_billing_against_tracker(uploaded_df, tracker_df):
 
     compare_df["sales_billed_qty"] = compare_df["sales_billed_qty"].fillna(0)
     compare_df["sales_dispatch_amount"] = compare_df["sales_dispatch_amount"].fillna(0)
-    compare_df["invoice_no"] = compare_df["invoice_no"].fillna("")
-    compare_df["latest_invoice_date"] = compare_df["latest_invoice_date"].fillna("")
-    compare_df["invoice_count"] = compare_df["invoice_count"].fillna(0).astype(int)
+    compare_df["sales_invoice_no"] = compare_df["sales_invoice_no"].fillna("")
+    compare_df["latest_sales_invoice_date"] = compare_df["latest_sales_invoice_date"].fillna("")
+    compare_df["sales_invoice_count"] = compare_df["sales_invoice_count"].fillna(0).astype(int)
     compare_df["sales_rows"] = compare_df["sales_rows"].fillna(0).astype(int)
     compare_df["qty_difference"] = compare_df["billed_qty"] - compare_df["sales_billed_qty"]
     compare_df["sales_balance_to_bill"] = (
@@ -1356,9 +1356,9 @@ def verify_sales_billing_against_tracker(uploaded_df, tracker_df):
         "sales_billed_qty",
         "sales_balance_to_bill",
         "qty_difference",
-        "invoice_no",
-        "latest_invoice_date",
-        "invoice_count",
+        "sales_invoice_no",
+        "latest_sales_invoice_date",
+        "sales_invoice_count",
         "sales_rows",
         "tracker_key_count",
         "billing_done",
@@ -1377,9 +1377,9 @@ def verify_sales_billing_against_tracker(uploaded_df, tracker_df):
         "sales_billed_qty": "Sales Billed Qty.",
         "sales_balance_to_bill": "Sales Balance To Bill",
         "qty_difference": "Tracker - Sales Diff",
-        "invoice_no": "Sales Invoice No.",
-        "latest_invoice_date": "Latest Sales Invoice Date",
-        "invoice_count": "Invoice Count",
+        "sales_invoice_no": "Sales Invoice No.",
+        "latest_sales_invoice_date": "Latest Sales Invoice Date",
+        "sales_invoice_count": "Invoice Count",
         "sales_rows": "Sales Rows",
         "tracker_key_count": "Tracker Key Count",
         "billing_done": "Tracker Billing Done",
@@ -1414,17 +1414,17 @@ def verify_sales_billing_against_tracker(uploaded_df, tracker_df):
             "RR Warehouse",
             "sales_billed_qty",
             "sales_dispatch_amount",
-            "invoice_no",
-            "latest_invoice_date",
-            "invoice_count",
+            "sales_invoice_no",
+            "latest_sales_invoice_date",
+            "sales_invoice_count",
             "sales_rows",
         ]
     ].rename(columns={
         "sales_billed_qty": "Sales Billed Qty.",
         "sales_dispatch_amount": "Sales Dispatch Amount",
-        "invoice_no": "Sales Invoice No.",
-        "latest_invoice_date": "Latest Sales Invoice Date",
-        "invoice_count": "Invoice Count",
+        "sales_invoice_no": "Sales Invoice No.",
+        "latest_sales_invoice_date": "Latest Sales Invoice Date",
+        "sales_invoice_count": "Invoice Count",
         "sales_rows": "Sales Rows",
     })
 
