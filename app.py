@@ -1986,13 +1986,13 @@ def apply_tracker_correction_upload(uploaded_df):
 
 
 def render_full_tracker_correction_upload(tracker):
-    if st.session_state.role != "Admin":
+    if st.session_state.role not in ["Admin", "Ops"]:
         return
 
     st.markdown("---")
     st.subheader("Full Tracker Correction Upload")
     st.caption(
-        "Admin only. Use this to load corrected opening tracker data after reset, "
+        "Use this to load corrected opening tracker data after reset, "
         "or to fix allocation, billed qty., remaining qty., invoice, or status. "
         "Action can be New, Replace, or Delete."
     )
