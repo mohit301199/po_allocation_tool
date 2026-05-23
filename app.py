@@ -473,6 +473,7 @@ def get_allowed_screens(role):
     if role == "Admin":
         return [
             "Dashboard Summary",
+            "Marketing Dashboard",
             "Upload & Allocate",
             "Allocation Tracker",
             "Billing Summary",
@@ -483,6 +484,7 @@ def get_allowed_screens(role):
     if role == "Ops":
         return [
             "Dashboard Summary",
+            "Marketing Dashboard",
             "Upload & Allocate",
             "Allocation Tracker",
             "Billing Summary",
@@ -492,6 +494,7 @@ def get_allowed_screens(role):
     if role == "Billing":
         return [
             "Dashboard Summary",
+            "Marketing Dashboard",
             "Allocation Tracker",
             "Billing Summary",
             "Open Allocation Qty"
@@ -499,6 +502,7 @@ def get_allowed_screens(role):
 
     return [
         "Dashboard Summary",
+        "Marketing Dashboard",
         "Billing Summary",
         "Open Allocation Qty"
     ]
@@ -3358,6 +3362,197 @@ This will permanently delete all saved allocation tracker data.
                     log_activity("reset_tracker", "All tracker data reset")
                     st.success("Tracker data reset successfully")
                     st.rerun()
+
+
+# =====================================================
+# MARKETING DASHBOARD
+# =====================================================
+
+elif menu == "Marketing Dashboard":
+    render_page_header(
+        "Marketing Dashboard",
+        "A product and customer view of allocation, billing, and pending billing performance."
+    )
+
+    tracker = get_tracker_df()
+
+    if tracker.empty:
+        st.info("No tracker data available yet.")
+
+    else:
+        marketing_df = tracker.copy()
+
+        for col in ["allocated_qty", "billed_qty", "balance_to_bill", "pending_amount"]:
+            if col not in marketing_df.columns:
+                marketing_df[col] = 0
+            marketing_df[col] = marketing_df[col].apply(clean_number)
+
+        for col in ["buyer_code", "fk_warehouse", "rr_warehouse", "fsn", "title", "sap_code"]:
+            if col not in marketing_df.columns:
+                marketing_df[col] = ""
+            marketing_df[col] = marketing_df[col].apply(clean_text)
+
+        marketing_df["Billing Status"] = marketing_df.apply(
+            lambda row: (
+                "Fully Billed"
+                if clean_number(row.get("balance_to_bill", 0)) <= 0 and clean_number(row.get("allocated_qty", 0)) > 0
+                else "Partially Billed"
+                if clean_number(row.get("billed_qty", 0)) > 0
+                else "Pending Billing"
+            ),
+            axis=1
+        )
+
+        total_allocated = marketing_df["allocated_qty"].sum()
+        total_billed = marketing_df["billed_qty"].sum()
+        total_balance = marketing_df["balance_to_bill"].sum()
+        billing_rate = (total_billed / total_allocated * 100) if total_allocated else 0
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.markdown(f"""
+        <div class="metric-card blue">
+            <div class="metric-title">Allocated Qty</div>
+            <div class="metric-value">{total_allocated:,.0f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        c2.markdown(f"""
+        <div class="metric-card green">
+            <div class="metric-title">Billed Qty</div>
+            <div class="metric-value">{total_billed:,.0f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        c3.markdown(f"""
+        <div class="metric-card orange">
+            <div class="metric-title">Balance To Bill</div>
+            <div class="metric-value">{total_balance:,.0f}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        c4.markdown(f"""
+        <div class="metric-card red">
+            <div class="metric-title">Billing %</div>
+            <div class="metric-value">{billing_rate:,.1f}%</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        filter_c1, filter_c2, filter_c3 = st.columns(3)
+
+        with filter_c1:
+            buyer_options = sorted([x for x in marketing_df["buyer_code"].unique() if x != ""])
+            selected_buyer = st.multiselect("Buyer Code", buyer_options)
+
+        with filter_c2:
+            fk_options = sorted([x for x in marketing_df["fk_warehouse"].unique() if x != ""])
+            selected_fk = st.multiselect("FK Warehouse", fk_options)
+
+        with filter_c3:
+            status_options = sorted(marketing_df["Billing Status"].unique())
+            selected_status = st.multiselect("Billing Status", status_options)
+
+        filtered_df = marketing_df.copy()
+
+        if selected_buyer:
+            filtered_df = filtered_df[filtered_df["buyer_code"].isin(selected_buyer)]
+
+        if selected_fk:
+            filtered_df = filtered_df[filtered_df["fk_warehouse"].isin(selected_fk)]
+
+        if selected_status:
+            filtered_df = filtered_df[filtered_df["Billing Status"].isin(selected_status)]
+
+        st.caption(f"Showing {len(filtered_df):,} tracker rows after filters.")
+
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "Buyer View",
+            "Warehouse View",
+            "Product View",
+            "Pending Billing Detail"
+        ])
+
+        def build_summary(group_cols):
+            if filtered_df.empty:
+                return pd.DataFrame()
+
+            summary_df = filtered_df.groupby(
+                group_cols,
+                dropna=False,
+                as_index=False
+            ).agg(
+                Allocated_Qty=("allocated_qty", "sum"),
+                Billed_Qty=("billed_qty", "sum"),
+                Balance_To_Bill=("balance_to_bill", "sum"),
+                Pending_Amount=("pending_amount", "sum"),
+                Tracker_Rows=("id", "count")
+            )
+
+            summary_df["Billing %"] = summary_df.apply(
+                lambda row: (
+                    clean_number(row["Billed_Qty"]) /
+                    clean_number(row["Allocated_Qty"]) * 100
+                ) if clean_number(row["Allocated_Qty"]) else 0,
+                axis=1
+            )
+
+            return summary_df.sort_values(
+                by=["Balance_To_Bill", "Allocated_Qty"],
+                ascending=[False, False]
+            )
+
+        with tab1:
+            st.subheader("Buyer Code Summary")
+            buyer_summary = build_summary(["buyer_code"])
+            st.dataframe(buyer_summary, use_container_width=True)
+
+        with tab2:
+            st.subheader("Warehouse Summary")
+            warehouse_summary = build_summary(["fk_warehouse", "rr_warehouse"])
+            st.dataframe(warehouse_summary, use_container_width=True)
+
+        with tab3:
+            st.subheader("Product Summary")
+            product_summary = build_summary(["fsn", "title", "sap_code"])
+            st.dataframe(product_summary.head(500), use_container_width=True)
+
+        with tab4:
+            st.subheader("Pending Billing Detail")
+            pending_detail = filtered_df[
+                filtered_df["balance_to_bill"] > 0
+            ].copy()
+
+            detail_cols = [
+                "po_no",
+                "order_id",
+                "buyer_code",
+                "fsn",
+                "title",
+                "rr_warehouse",
+                "fk_warehouse",
+                "sap_code",
+                "allocated_qty",
+                "billed_qty",
+                "balance_to_bill",
+                "sent_date",
+                "remark",
+            ]
+            detail_cols = [col for col in detail_cols if col in pending_detail.columns]
+
+            st.dataframe(
+                pending_detail[detail_cols].head(500),
+                use_container_width=True
+            )
+
+            if not pending_detail.empty:
+                st.download_button(
+                    "Download Pending Billing Detail",
+                    data=to_excel(pending_detail[detail_cols]),
+                    file_name="marketing_pending_billing_detail.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
 
 # =====================================================
