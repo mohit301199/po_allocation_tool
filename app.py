@@ -21,6 +21,8 @@ from reportlab.platypus import PageBreak
 import tempfile
 import os
 
+from marketing_dashboard import show_marketing_dashboard
+
 
 # =====================================================
 # PAGE CONFIG
@@ -3369,6 +3371,16 @@ This will permanently delete all saved allocation tracker data.
 # =====================================================
 
 elif menu == "Marketing Dashboard":
+    show_marketing_dashboard(
+        engine,
+        db_read,
+        db_execute,
+        db_execute_many,
+        clean_text,
+        clean_number,
+    )
+    st.stop()
+
     render_page_header(
         "Marketing Dashboard",
         "A product and customer view of allocation, billing, and pending billing performance."

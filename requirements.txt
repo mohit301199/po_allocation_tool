@@ -7,3 +7,6 @@ psycopg2-binary
 bcrypt
 python-barcode
 Pillow
+playwright
+requests
+beautifulsoup4
