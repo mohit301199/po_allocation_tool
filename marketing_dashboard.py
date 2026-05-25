@@ -60,7 +60,229 @@ def execute_returning_id(query, params):
         return connection.execute(text(query), params or {}).scalar()
 
 
+MARKETING_REQUIRED_COLUMNS = {
+    "marketing_pincode_master": ["id", "pincode", "city", "state", "zone", "is_active"],
+    "sku_master": ["id", "fsn", "title", "brand", "series", "color", "product_type", "product_url", "is_active"],
+    "marketing_scrape_batches": [
+        "id",
+        "run_datetime",
+        "keyword",
+        "run_scope",
+        "product_count",
+        "pincode_count",
+        "status",
+        "remark",
+    ],
+    "marketing_rank_runs": [
+        "id",
+        "batch_id",
+        "run_datetime",
+        "keyword",
+        "selected_fsn",
+        "selected_sku_title",
+        "selected_brand",
+        "selected_series",
+        "selected_color",
+        "selected_type",
+        "pincode",
+        "city",
+        "state",
+        "my_rank",
+        "my_price",
+        "my_live_price_text",
+        "my_delivery_tat",
+        "stock_status",
+        "visibility_status",
+    ],
+    "marketing_rank_products": [
+        "id",
+        "run_id",
+        "rank",
+        "product_title",
+        "brand",
+        "price",
+        "rating",
+        "review_count",
+        "delivery_tat",
+        "product_url",
+        "sponsored_status",
+        "flipkart_fsn",
+        "position_tag",
+        "is_my_sku",
+    ],
+}
+
+
+MARKETING_SETUP_SQL = """
+CREATE TABLE IF NOT EXISTS marketing_pincode_master (
+    id SERIAL PRIMARY KEY,
+    pincode TEXT UNIQUE,
+    city TEXT,
+    state TEXT,
+    zone TEXT,
+    is_active TEXT DEFAULT 'Yes'
+);
+
+CREATE TABLE IF NOT EXISTS sku_master (
+    id SERIAL PRIMARY KEY,
+    fsn TEXT UNIQUE,
+    title TEXT,
+    brand TEXT,
+    series TEXT,
+    color TEXT,
+    product_type TEXT,
+    product_url TEXT,
+    is_active TEXT DEFAULT 'Yes'
+);
+
+CREATE TABLE IF NOT EXISTS marketing_scrape_batches (
+    id SERIAL PRIMARY KEY,
+    run_datetime TEXT,
+    keyword TEXT,
+    run_scope TEXT,
+    product_count INTEGER,
+    pincode_count INTEGER,
+    status TEXT,
+    remark TEXT
+);
+
+CREATE TABLE IF NOT EXISTS marketing_rank_runs (
+    id SERIAL PRIMARY KEY,
+    batch_id INTEGER,
+    run_datetime TEXT,
+    keyword TEXT,
+    selected_fsn TEXT,
+    selected_sku_title TEXT,
+    selected_brand TEXT,
+    selected_series TEXT,
+    selected_color TEXT,
+    selected_type TEXT,
+    pincode TEXT,
+    city TEXT,
+    state TEXT,
+    my_rank INTEGER,
+    my_price REAL,
+    my_live_price_text TEXT,
+    my_delivery_tat TEXT,
+    stock_status TEXT,
+    visibility_status TEXT
+);
+
+CREATE TABLE IF NOT EXISTS marketing_rank_products (
+    id SERIAL PRIMARY KEY,
+    run_id INTEGER,
+    rank INTEGER,
+    product_title TEXT,
+    brand TEXT,
+    price REAL,
+    rating TEXT,
+    review_count TEXT,
+    delivery_tat TEXT,
+    product_url TEXT,
+    sponsored_status TEXT,
+    flipkart_fsn TEXT,
+    position_tag TEXT,
+    is_my_sku BOOLEAN DEFAULT FALSE
+);
+
+ALTER TABLE marketing_pincode_master ADD COLUMN IF NOT EXISTS city TEXT;
+ALTER TABLE marketing_pincode_master ADD COLUMN IF NOT EXISTS state TEXT;
+ALTER TABLE marketing_pincode_master ADD COLUMN IF NOT EXISTS zone TEXT;
+ALTER TABLE marketing_pincode_master ADD COLUMN IF NOT EXISTS is_active TEXT DEFAULT 'Yes';
+ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS title TEXT;
+ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS brand TEXT;
+ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS series TEXT;
+ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS color TEXT;
+ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS product_type TEXT;
+ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS product_url TEXT;
+ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS is_active TEXT DEFAULT 'Yes';
+ALTER TABLE marketing_scrape_batches ADD COLUMN IF NOT EXISTS keyword TEXT;
+ALTER TABLE marketing_scrape_batches ADD COLUMN IF NOT EXISTS run_scope TEXT;
+ALTER TABLE marketing_scrape_batches ADD COLUMN IF NOT EXISTS product_count INTEGER;
+ALTER TABLE marketing_scrape_batches ADD COLUMN IF NOT EXISTS pincode_count INTEGER;
+ALTER TABLE marketing_scrape_batches ADD COLUMN IF NOT EXISTS status TEXT;
+ALTER TABLE marketing_scrape_batches ADD COLUMN IF NOT EXISTS remark TEXT;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS batch_id INTEGER;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS keyword TEXT;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS selected_fsn TEXT;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS selected_sku_title TEXT;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS selected_brand TEXT;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS selected_series TEXT;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS selected_color TEXT;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS selected_type TEXT;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS pincode TEXT;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS city TEXT;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS state TEXT;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS my_rank INTEGER;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS my_price REAL;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS my_live_price_text TEXT;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS my_delivery_tat TEXT;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS stock_status TEXT;
+ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS visibility_status TEXT;
+ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS rank INTEGER;
+ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS product_title TEXT;
+ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS brand TEXT;
+ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS price REAL;
+ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS rating TEXT;
+ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS review_count TEXT;
+ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS delivery_tat TEXT;
+ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS product_url TEXT;
+ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS sponsored_status TEXT;
+ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS flipkart_fsn TEXT;
+ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS position_tag TEXT;
+ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS is_my_sku BOOLEAN DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_marketing_rank_runs_batch ON marketing_rank_runs (batch_id);
+CREATE INDEX IF NOT EXISTS idx_marketing_rank_runs_filters ON marketing_rank_runs (keyword, selected_fsn, pincode);
+CREATE INDEX IF NOT EXISTS idx_marketing_rank_products_run ON marketing_rank_products (run_id);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON
+    marketing_pincode_master,
+    sku_master,
+    marketing_scrape_batches,
+    marketing_rank_runs,
+    marketing_rank_products
+TO po_app_user;
+
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO po_app_user;
+"""
+
+
+def get_marketing_schema_gaps():
+    table_names = list(MARKETING_REQUIRED_COLUMNS.keys())
+    rows = _db_read(
+        """
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+        AND table_name = ANY(:table_names)
+        """,
+        {"table_names": table_names},
+        use_cache=False,
+    )
+
+    existing = {}
+    for _, row in rows.iterrows():
+        existing.setdefault(row["table_name"], set()).add(row["column_name"])
+
+    gaps = []
+    for table_name, required_columns in MARKETING_REQUIRED_COLUMNS.items():
+        if table_name not in existing:
+            gaps.append(f"Missing table: {table_name}")
+            continue
+
+        missing_columns = [column for column in required_columns if column not in existing[table_name]]
+        if missing_columns:
+            gaps.append(f"{table_name} missing columns: {', '.join(missing_columns)}")
+
+    return gaps
+
+
 def ensure_marketing_tables():
+    schema_gaps = get_marketing_schema_gaps()
+    if not schema_gaps:
+        return []
+
     create_queries = [
         """
         CREATE TABLE IF NOT EXISTS marketing_pincode_master (
@@ -151,8 +373,15 @@ def ensure_marketing_tables():
         "CREATE INDEX IF NOT EXISTS idx_marketing_rank_products_run ON marketing_rank_products (run_id)",
     ]
 
+    migration_errors = []
     for query in create_queries + alter_queries + index_queries:
-        _db_execute(query, clear_cache=False)
+        try:
+            _db_execute(query, clear_cache=False)
+        except Exception as exc:
+            migration_errors.append(f"{query.strip().splitlines()[0]} -> {exc}")
+
+    remaining_gaps = get_marketing_schema_gaps()
+    return remaining_gaps or migration_errors
 
 
 def get_existing_sku_master():
@@ -1064,7 +1293,18 @@ def render_manage_tab():
 
 def show_marketing_dashboard(engine, db_read, db_execute, db_execute_many, clean_text, clean_number):
     configure_marketing_dashboard(engine, db_read, db_execute, db_execute_many, clean_text, clean_number)
-    ensure_marketing_tables()
+    setup_issues = ensure_marketing_tables()
+    if setup_issues:
+        st.error("Marketing Dashboard database setup is pending.")
+        st.write(
+            "Your current database user cannot create/alter tables automatically. "
+            "Open Supabase SQL Editor, run the SQL below once, then refresh this app."
+        )
+        with st.expander("Setup details", expanded=True):
+            for issue in setup_issues[:10]:
+                st.warning(issue)
+        st.code(MARKETING_SETUP_SQL, language="sql")
+        return
 
     sku_master = get_existing_sku_master()
     active_pincodes = get_active_marketing_pincodes()
