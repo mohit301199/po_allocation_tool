@@ -61,89 +61,97 @@ def execute_returning_id(query, params):
 
 
 def ensure_marketing_tables():
-    queries = [
+    create_queries = [
         """
         CREATE TABLE IF NOT EXISTS marketing_pincode_master (
             id SERIAL PRIMARY KEY,
             pincode TEXT UNIQUE,
-            city TEXT,
-            state TEXT,
-            zone TEXT,
-            is_active TEXT DEFAULT 'Yes'
+            city TEXT
         )
         """,
         """
         CREATE TABLE IF NOT EXISTS sku_master (
             id SERIAL PRIMARY KEY,
             fsn TEXT UNIQUE,
-            title TEXT,
-            brand TEXT,
-            series TEXT,
-            color TEXT,
-            product_type TEXT,
-            product_url TEXT,
-            is_active TEXT DEFAULT 'Yes'
+            title TEXT
         )
         """,
         """
         CREATE TABLE IF NOT EXISTS marketing_scrape_batches (
             id SERIAL PRIMARY KEY,
-            run_datetime TEXT,
-            keyword TEXT,
-            run_scope TEXT,
-            product_count INTEGER,
-            pincode_count INTEGER,
-            status TEXT,
-            remark TEXT
+            run_datetime TEXT
         )
         """,
         """
         CREATE TABLE IF NOT EXISTS marketing_rank_runs (
             id SERIAL PRIMARY KEY,
-            batch_id INTEGER,
-            run_datetime TEXT,
-            keyword TEXT,
-            selected_fsn TEXT,
-            selected_sku_title TEXT,
-            selected_brand TEXT,
-            selected_series TEXT,
-            selected_color TEXT,
-            selected_type TEXT,
-            pincode TEXT,
-            city TEXT,
-            state TEXT,
-            my_rank INTEGER,
-            my_price REAL,
-            my_live_price_text TEXT,
-            my_delivery_tat TEXT,
-            stock_status TEXT,
-            visibility_status TEXT
+            run_datetime TEXT
         )
         """,
         """
         CREATE TABLE IF NOT EXISTS marketing_rank_products (
             id SERIAL PRIMARY KEY,
-            run_id INTEGER,
-            rank INTEGER,
-            product_title TEXT,
-            brand TEXT,
-            price REAL,
-            rating TEXT,
-            review_count TEXT,
-            delivery_tat TEXT,
-            product_url TEXT,
-            sponsored_status TEXT,
-            flipkart_fsn TEXT,
-            position_tag TEXT,
-            is_my_sku BOOLEAN DEFAULT FALSE
+            run_id INTEGER
         )
         """,
+    ]
+
+    alter_queries = [
+        "ALTER TABLE marketing_pincode_master ADD COLUMN IF NOT EXISTS city TEXT",
+        "ALTER TABLE marketing_pincode_master ADD COLUMN IF NOT EXISTS state TEXT",
+        "ALTER TABLE marketing_pincode_master ADD COLUMN IF NOT EXISTS zone TEXT",
+        "ALTER TABLE marketing_pincode_master ADD COLUMN IF NOT EXISTS is_active TEXT DEFAULT 'Yes'",
+        "ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS title TEXT",
+        "ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS brand TEXT",
+        "ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS series TEXT",
+        "ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS color TEXT",
+        "ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS product_type TEXT",
+        "ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS product_url TEXT",
+        "ALTER TABLE sku_master ADD COLUMN IF NOT EXISTS is_active TEXT DEFAULT 'Yes'",
+        "ALTER TABLE marketing_scrape_batches ADD COLUMN IF NOT EXISTS keyword TEXT",
+        "ALTER TABLE marketing_scrape_batches ADD COLUMN IF NOT EXISTS run_scope TEXT",
+        "ALTER TABLE marketing_scrape_batches ADD COLUMN IF NOT EXISTS product_count INTEGER",
+        "ALTER TABLE marketing_scrape_batches ADD COLUMN IF NOT EXISTS pincode_count INTEGER",
+        "ALTER TABLE marketing_scrape_batches ADD COLUMN IF NOT EXISTS status TEXT",
+        "ALTER TABLE marketing_scrape_batches ADD COLUMN IF NOT EXISTS remark TEXT",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS batch_id INTEGER",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS keyword TEXT",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS selected_fsn TEXT",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS selected_sku_title TEXT",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS selected_brand TEXT",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS selected_series TEXT",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS selected_color TEXT",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS selected_type TEXT",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS pincode TEXT",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS city TEXT",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS state TEXT",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS my_rank INTEGER",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS my_price REAL",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS my_live_price_text TEXT",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS my_delivery_tat TEXT",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS stock_status TEXT",
+        "ALTER TABLE marketing_rank_runs ADD COLUMN IF NOT EXISTS visibility_status TEXT",
+        "ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS rank INTEGER",
+        "ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS product_title TEXT",
+        "ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS brand TEXT",
+        "ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS price REAL",
+        "ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS rating TEXT",
+        "ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS review_count TEXT",
+        "ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS delivery_tat TEXT",
+        "ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS product_url TEXT",
+        "ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS sponsored_status TEXT",
+        "ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS flipkart_fsn TEXT",
+        "ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS position_tag TEXT",
+        "ALTER TABLE marketing_rank_products ADD COLUMN IF NOT EXISTS is_my_sku BOOLEAN DEFAULT FALSE",
+    ]
+
+    index_queries = [
         "CREATE INDEX IF NOT EXISTS idx_marketing_rank_runs_batch ON marketing_rank_runs (batch_id)",
         "CREATE INDEX IF NOT EXISTS idx_marketing_rank_runs_filters ON marketing_rank_runs (keyword, selected_fsn, pincode)",
         "CREATE INDEX IF NOT EXISTS idx_marketing_rank_products_run ON marketing_rank_products (run_id)",
     ]
 
-    for query in queries:
+    for query in create_queries + alter_queries + index_queries:
         _db_execute(query, clear_cache=False)
 
 
