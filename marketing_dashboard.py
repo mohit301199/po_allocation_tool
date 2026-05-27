@@ -774,7 +774,7 @@ def launch_chromium(playwright, launch_args):
             library_name = missing_library.group(1) if missing_library else "a Linux browser library"
             raise RuntimeError(
                 f"Chromium cannot start on Streamlit Cloud because {library_name} is missing. "
-                "The app includes packages.txt to install browser dependencies; redeploy the app and rerun."
+                "The PO allocation app is online, but cloud browser scraping needs Streamlit system packages or a separate scraping worker."
             ) from exc
 
         if "Executable doesn't exist" not in str(exc) and "playwright install" not in str(exc).lower():
