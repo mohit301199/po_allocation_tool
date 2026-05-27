@@ -781,15 +781,25 @@ def get_remote_browser_config():
 def launch_chromium(playwright, launch_args):
     remote_endpoint, remote_protocol = get_remote_browser_config()
     if remote_endpoint:
-        try:
-            if remote_protocol == "playwright":
-                return playwright.chromium.connect(remote_endpoint, timeout=60000)
-            return playwright.chromium.connect_over_cdp(remote_endpoint, timeout=60000)
-        except Exception as exc:
-            raise RuntimeError(
-                "Could not connect to the configured remote browser endpoint. "
-                "Check REMOTE_BROWSER_WS_ENDPOINT and REMOTE_BROWSER_PROTOCOL in Streamlit secrets."
-            ) from exc
+        connection_attempts = (
+            ["playwright", "cdp"] if remote_protocol == "playwright" else ["cdp", "playwright"]
+        )
+        errors = []
+
+        for protocol in connection_attempts:
+            try:
+                if protocol == "playwright":
+                    return playwright.chromium.connect(remote_endpoint, timeout=60000)
+                return playwright.chromium.connect_over_cdp(remote_endpoint, timeout=60000)
+            except Exception as exc:
+                errors.append(f"{protocol}: {str(exc).splitlines()[0]}")
+
+        endpoint_hint = remote_endpoint.split("?")[0]
+        error_hint = " | ".join(errors[:2])
+        raise RuntimeError(
+            "Could not connect to the configured remote browser endpoint. "
+            f"Endpoint checked: {endpoint_hint}. Tried Playwright and CDP. Last errors: {error_hint}"
+        )
 
     try:
         return playwright.chromium.launch(**launch_args)
