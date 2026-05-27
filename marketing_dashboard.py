@@ -769,6 +769,14 @@ def launch_chromium(playwright, launch_args):
     try:
         return playwright.chromium.launch(**launch_args)
     except Exception as exc:
+        if "error while loading shared libraries" in str(exc):
+            missing_library = re.search(r"error while loading shared libraries:\s*([^:]+)", str(exc))
+            library_name = missing_library.group(1) if missing_library else "a Linux browser library"
+            raise RuntimeError(
+                f"Chromium cannot start on Streamlit Cloud because {library_name} is missing. "
+                "The app includes packages.txt to install browser dependencies; redeploy the app and rerun."
+            ) from exc
+
         if "Executable doesn't exist" not in str(exc) and "playwright install" not in str(exc).lower():
             raise
 
