@@ -60,6 +60,12 @@ def execute_returning_id(query, params):
         return connection.execute(text(query), params or {}).scalar()
 
 
+def next_session_run_id():
+    current_id = int(st.session_state.get("marketing_temp_run_id", -1))
+    st.session_state["marketing_temp_run_id"] = current_id - 1
+    return current_id
+
+
 MARKETING_REQUIRED_COLUMNS = {
     "marketing_pincode_master": ["id", "pincode", "city", "state", "zone", "is_active"],
     "sku_master": ["id", "fsn", "title", "brand", "series", "color", "product_type", "product_url", "is_active"],
@@ -689,37 +695,47 @@ def import_pincode_master(uploaded_file):
 
 
 def create_marketing_scrape_batch(keyword, run_scope, product_count, pincode_count):
-    return execute_returning_id(
-        """
-        INSERT INTO marketing_scrape_batches (
-            run_datetime, keyword, run_scope, product_count, pincode_count, status, remark
+    try:
+        return execute_returning_id(
+            """
+            INSERT INTO marketing_scrape_batches (
+                run_datetime, keyword, run_scope, product_count, pincode_count, status, remark
+            )
+            VALUES (:run_datetime, :keyword, :run_scope, :product_count, :pincode_count, :status, :remark)
+            RETURNING id
+            """,
+            {
+                "run_datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "keyword": clean_text_value(keyword),
+                "run_scope": clean_text_value(run_scope),
+                "product_count": int(product_count),
+                "pincode_count": int(pincode_count),
+                "status": "Running",
+                "remark": "",
+            },
         )
-        VALUES (:run_datetime, :keyword, :run_scope, :product_count, :pincode_count, :status, :remark)
-        RETURNING id
-        """,
-        {
-            "run_datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "keyword": clean_text_value(keyword),
-            "run_scope": clean_text_value(run_scope),
-            "product_count": int(product_count),
-            "pincode_count": int(pincode_count),
-            "status": "Running",
-            "remark": "",
-        },
-    )
+    except Exception as exc:
+        st.session_state["marketing_db_write_warning"] = (
+            "Supabase blocked marketing history writes. Current run will show live results only."
+        )
+        logging.warning("Could not create marketing scrape batch: %s", exc)
+        return None
 
 
 def update_marketing_scrape_batch(batch_id, status, remark=""):
     if not batch_id:
         return
-    _db_execute(
-        """
-        UPDATE marketing_scrape_batches
-        SET status = :status, remark = :remark
-        WHERE id = :id
-        """,
-        {"id": int(batch_id), "status": clean_text_value(status), "remark": clean_text_value(remark)},
-    )
+    try:
+        _db_execute(
+            """
+            UPDATE marketing_scrape_batches
+            SET status = :status, remark = :remark
+            WHERE id = :id
+            """,
+            {"id": int(batch_id), "status": clean_text_value(status), "remark": clean_text_value(remark)},
+        )
+    except Exception as exc:
+        logging.warning("Could not update marketing scrape batch: %s", exc)
 
 
 def extract_fsn_from_url(url):
@@ -1024,41 +1040,50 @@ def scrape_flipkart_fsn_live_details_batch(sku_records, pincode, top15_products)
 
 
 def save_marketing_rank_run(keyword, selected_sku, pincode_row, products, my_product, batch_id, live_details):
-    run_id = execute_returning_id(
-        """
-        INSERT INTO marketing_rank_runs (
-            batch_id, run_datetime, keyword, selected_fsn, selected_sku_title, selected_brand,
-            selected_series, selected_color, selected_type, pincode, city, state,
-            my_rank, my_price, my_live_price_text, my_delivery_tat, stock_status, visibility_status
+    run_params = {
+        "batch_id": batch_id,
+        "run_datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "keyword": clean_text_value(keyword),
+        "selected_fsn": clean_text_value(selected_sku.get("fsn")),
+        "selected_sku_title": clean_text_value(selected_sku.get("title")),
+        "selected_brand": clean_text_value(selected_sku.get("brand")),
+        "selected_series": clean_text_value(selected_sku.get("series")),
+        "selected_color": clean_text_value(selected_sku.get("color")),
+        "selected_type": clean_text_value(selected_sku.get("product_type")),
+        "pincode": clean_text_value(pincode_row.get("pincode")),
+        "city": clean_text_value(pincode_row.get("city")),
+        "state": clean_text_value(pincode_row.get("state")),
+        "my_rank": int(my_product.get("rank")) if my_product else None,
+        "my_price": live_details.get("price"),
+        "my_live_price_text": clean_text_value(live_details.get("live_price_text")),
+        "my_delivery_tat": clean_text_value(live_details.get("delivery_tat")),
+        "stock_status": clean_text_value(live_details.get("stock_status")),
+        "visibility_status": get_visibility_status(my_product.get("rank") if my_product else None),
+    }
+
+    try:
+        run_id = execute_returning_id(
+            """
+            INSERT INTO marketing_rank_runs (
+                batch_id, run_datetime, keyword, selected_fsn, selected_sku_title, selected_brand,
+                selected_series, selected_color, selected_type, pincode, city, state,
+                my_rank, my_price, my_live_price_text, my_delivery_tat, stock_status, visibility_status
+            )
+            VALUES (
+                :batch_id, :run_datetime, :keyword, :selected_fsn, :selected_sku_title, :selected_brand,
+                :selected_series, :selected_color, :selected_type, :pincode, :city, :state,
+                :my_rank, :my_price, :my_live_price_text, :my_delivery_tat, :stock_status, :visibility_status
+            )
+            RETURNING id
+            """,
+            run_params,
         )
-        VALUES (
-            :batch_id, :run_datetime, :keyword, :selected_fsn, :selected_sku_title, :selected_brand,
-            :selected_series, :selected_color, :selected_type, :pincode, :city, :state,
-            :my_rank, :my_price, :my_live_price_text, :my_delivery_tat, :stock_status, :visibility_status
+    except Exception as exc:
+        st.session_state["marketing_db_write_warning"] = (
+            "Supabase blocked marketing history writes. Current run will show live results only."
         )
-        RETURNING id
-        """,
-        {
-            "batch_id": batch_id,
-            "run_datetime": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "keyword": clean_text_value(keyword),
-            "selected_fsn": clean_text_value(selected_sku.get("fsn")),
-            "selected_sku_title": clean_text_value(selected_sku.get("title")),
-            "selected_brand": clean_text_value(selected_sku.get("brand")),
-            "selected_series": clean_text_value(selected_sku.get("series")),
-            "selected_color": clean_text_value(selected_sku.get("color")),
-            "selected_type": clean_text_value(selected_sku.get("product_type")),
-            "pincode": clean_text_value(pincode_row.get("pincode")),
-            "city": clean_text_value(pincode_row.get("city")),
-            "state": clean_text_value(pincode_row.get("state")),
-            "my_rank": int(my_product.get("rank")) if my_product else None,
-            "my_price": live_details.get("price"),
-            "my_live_price_text": clean_text_value(live_details.get("live_price_text")),
-            "my_delivery_tat": clean_text_value(live_details.get("delivery_tat")),
-            "stock_status": clean_text_value(live_details.get("stock_status")),
-            "visibility_status": get_visibility_status(my_product.get("rank") if my_product else None),
-        },
-    )
+        logging.warning("Could not save marketing rank run: %s", exc)
+        run_id = next_session_run_id()
 
     selected_fsn = clean_text_value(selected_sku.get("fsn")).upper()
     product_rows = []
@@ -1095,20 +1120,26 @@ def save_marketing_rank_run(keyword, selected_sku, pincode_row, products, my_pro
         )
 
     if product_rows:
-        _db_execute_many(
-            """
-            INSERT INTO marketing_rank_products (
-                run_id, rank, product_title, brand, price, rating, review_count, delivery_tat,
-                product_url, sponsored_status, flipkart_fsn, position_tag, is_my_sku
+        try:
+            _db_execute_many(
+                """
+                INSERT INTO marketing_rank_products (
+                    run_id, rank, product_title, brand, price, rating, review_count, delivery_tat,
+                    product_url, sponsored_status, flipkart_fsn, position_tag, is_my_sku
+                )
+                VALUES (
+                    :run_id, :rank, :product_title, :brand, :price, :rating, :review_count, :delivery_tat,
+                    :product_url, :sponsored_status, :flipkart_fsn, :position_tag, :is_my_sku
+                )
+                """,
+                product_rows,
+                clear_cache=False,
             )
-            VALUES (
-                :run_id, :rank, :product_title, :brand, :price, :rating, :review_count, :delivery_tat,
-                :product_url, :sponsored_status, :flipkart_fsn, :position_tag, :is_my_sku
+        except Exception as exc:
+            st.session_state["marketing_db_write_warning"] = (
+                "Supabase blocked marketing competition history writes. Current run will show live results only."
             )
-            """,
-            product_rows,
-            clear_cache=False,
-        )
+            logging.warning("Could not save marketing rank products: %s", exc)
 
     return run_id
 
@@ -1640,6 +1671,8 @@ def show_marketing_dashboard(engine, db_read, db_execute, db_execute_many, clean
                 st.session_state["marketing_product_rows_by_run"] = product_rows_by_run
                 st.session_state["marketing_batch_id"] = batch_ids[-1] if batch_ids else None
                 status.success("Rank check completed.")
+                if st.session_state.get("marketing_db_write_warning"):
+                    st.warning(st.session_state["marketing_db_write_warning"])
                 if failures:
                     with st.expander("Scraping failures"):
                         for failure in failures:
