@@ -168,6 +168,30 @@ DEFAULT_MARKETING_PINCODES = [
 ]
 
 
+DEFAULT_SKU_MASTER = [
+    {"fsn": "FANGZHZAKKKVXRNE", "title": "", "brand": "", "series": "Centaur_Ped", "color": "Blue", "product_type": "Pedestal", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANHCQ84GVJ3YMUH", "title": "", "brand": "", "series": "Centaur_Table", "color": "Blue", "product_type": "Table", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANGZHPCSJYMGPGY", "title": "", "brand": "", "series": "Centaur_Wall", "color": "Blue", "product_type": "Wall", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANH29RFZWZ7DHRQ", "title": "", "brand": "", "series": "Energy_Pro", "color": "White", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANH2D8TXKFBYUZH", "title": "", "brand": "", "series": "Energy_Pro", "color": "Blue", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANH29SARZZFT7FM", "title": "", "brand": "", "series": "Energy_Pro", "color": "Brown", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANHF5BNRHQHCPBH", "title": "", "brand": "", "series": "Energy_Pro_Slim", "color": "Brown", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANHF86CYFJUWXHB", "title": "", "brand": "", "series": "Energy_Pro_Slim", "color": "Cream", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANHF5B6ECFMH8HY", "title": "", "brand": "", "series": "Energy_Pro_Slim", "color": "Blue", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANHDFH833ZHHVSZ", "title": "", "brand": "", "series": "Josh_Deco", "color": "Blue", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANGVZ2CHQYZP74N", "title": "", "brand": "", "series": "Josh_Deco", "color": "Brown", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANGHKSJQMPR2Q5Q", "title": "", "brand": "", "series": "Josh_Eco", "color": "Brown", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANGNQK3QGJFCJYM", "title": "", "brand": "", "series": "Josh_Eco", "color": "Ivory", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANHKYZVVEMVRUFB", "title": "", "brand": "", "series": "Neo_Air", "color": "Brown", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANHKYZ6GZDJGCH", "title": "", "brand": "", "series": "Neo_Air", "color": "Mirage_White", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANHKYZ76KM3HFBX", "title": "", "brand": "", "series": "Neo_Air", "color": "Matt_White", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANHKYZWQSBV7KDS", "title": "", "brand": "", "series": "Neo_Air", "color": "Oxford_Blue", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANHVHEPFR45TNNN", "title": "", "brand": "", "series": "Curve_Air_Maxx", "color": "White", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANHVVEZBBCXEWV", "title": "", "brand": "", "series": "Curve_Air_Maxx", "color": "Royal Blue", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+    {"fsn": "FANHVEPXZCCWRM", "title": "", "brand": "", "series": "Curve_Air_Maxx", "color": "Grey", "product_type": "Ceiling", "product_url": "", "is_active": "Yes"},
+]
+
+
 MARKETING_SETUP_SQL = """
 CREATE TABLE IF NOT EXISTS marketing_pincode_master (
     id SERIAL PRIMARY KEY,
@@ -441,42 +465,105 @@ def ensure_marketing_tables():
 
 def get_existing_sku_master():
     ensure_marketing_tables()
-    sku_df = _db_read(
-        """
-        SELECT fsn, title, brand, series, color, product_type, product_url
-        FROM sku_master
-        WHERE LOWER(COALESCE(is_active, 'Yes')) IN ('yes', 'y', '1', 'true', 'active')
-        ORDER BY product_type, series, color, fsn
-        """,
-        use_cache=False,
-    )
+    seed_default_sku_master()
 
-    if sku_df.empty:
+    try:
         sku_df = _db_read(
             """
-            SELECT
-                fsn,
-                MAX(title) AS title,
-                '' AS brand,
-                '' AS series,
-                '' AS color,
-                '' AS product_type,
-                '' AS product_url
-            FROM allocation_tracker
-            WHERE fsn IS NOT NULL AND TRIM(fsn) <> ''
-            GROUP BY fsn
-            ORDER BY MAX(title), fsn
+            SELECT fsn, title, brand, series, color, product_type, product_url
+            FROM sku_master
+            WHERE LOWER(COALESCE(is_active, 'Yes')) IN ('yes', 'y', '1', 'true', 'active')
+            ORDER BY product_type, series, color, fsn
             """,
             use_cache=False,
         )
+    except Exception:
+        sku_df = pd.DataFrame()
+
+    if sku_df.empty:
+        try:
+            sku_df = _db_read(
+                """
+                SELECT
+                    fsn,
+                    MAX(title) AS title,
+                    '' AS brand,
+                    '' AS series,
+                    '' AS color,
+                    '' AS product_type,
+                    '' AS product_url
+                FROM allocation_tracker
+                WHERE fsn IS NOT NULL AND TRIM(fsn) <> ''
+                GROUP BY fsn
+                ORDER BY MAX(title), fsn
+                """,
+                use_cache=False,
+            )
+        except Exception:
+            sku_df = pd.DataFrame()
 
     for col in ["fsn", "title", "brand", "series", "color", "product_type", "product_url"]:
         if col not in sku_df.columns:
             sku_df[col] = ""
         sku_df[col] = sku_df[col].apply(clean_text_value)
 
+    default_sku_df = pd.DataFrame(DEFAULT_SKU_MASTER)
+    for col in ["fsn", "title", "brand", "series", "color", "product_type", "product_url"]:
+        default_sku_df[col] = default_sku_df[col].apply(clean_text_value)
+
+    if sku_df.empty:
+        sku_df = default_sku_df[["fsn", "title", "brand", "series", "color", "product_type", "product_url"]].copy()
+    else:
+        sku_df = sku_df.merge(
+            default_sku_df[["fsn", "title", "brand", "series", "color", "product_type", "product_url"]],
+            on="fsn",
+            how="outer",
+            suffixes=("", "_default"),
+        )
+
+        for col in ["title", "brand", "series", "color", "product_type", "product_url"]:
+            default_col = f"{col}_default"
+            if default_col in sku_df.columns:
+                sku_df[col] = sku_df[col].where(sku_df[col].apply(clean_text_value) != "", sku_df[default_col])
+                sku_df = sku_df.drop(columns=[default_col])
+
     sku_df["display_name"] = sku_df.apply(make_sku_display_name, axis=1)
     return sku_df.drop_duplicates(subset=["fsn"])
+
+
+def seed_default_sku_master():
+    try:
+        existing = _db_read("SELECT COUNT(*) AS row_count FROM sku_master", use_cache=False)
+    except Exception:
+        return 0
+
+    if not existing.empty and int(existing.iloc[0]["row_count"]) > 0:
+        return 0
+
+    try:
+        _db_execute_many(
+            """
+            INSERT INTO sku_master (
+                fsn, title, brand, series, color, product_type, product_url, is_active
+            )
+            VALUES (
+                :fsn, :title, :brand, :series, :color, :product_type, :product_url, :is_active
+            )
+            ON CONFLICT (fsn)
+            DO UPDATE SET
+                title = COALESCE(NULLIF(sku_master.title, ''), EXCLUDED.title),
+                brand = COALESCE(NULLIF(sku_master.brand, ''), EXCLUDED.brand),
+                series = EXCLUDED.series,
+                color = EXCLUDED.color,
+                product_type = EXCLUDED.product_type,
+                product_url = COALESCE(NULLIF(sku_master.product_url, ''), EXCLUDED.product_url),
+                is_active = EXCLUDED.is_active
+            """,
+            DEFAULT_SKU_MASTER,
+        )
+        return len(DEFAULT_SKU_MASTER)
+    except Exception:
+        return 0
 
 
 def make_sku_display_name(row):
@@ -1049,6 +1136,7 @@ def process_keyword_rank_check_all_products(keyword, sku_master, pincode_df, pro
         try:
             products = scrape_flipkart_keyword(keyword, pincode, top_n=15)
             live_details_by_fsn = scrape_flipkart_fsn_live_details_batch(sku_records, pincode, products)
+            first_run_id_for_pincode = None
 
             for sku_index, selected_sku in enumerate(sku_records):
                 my_product = identify_my_sku(products, selected_sku)
@@ -1062,13 +1150,16 @@ def process_keyword_rank_check_all_products(keyword, sku_master, pincode_df, pro
                     keyword, selected_sku, pincode_row, products_to_save, my_product, batch_id, live_details
                 )
 
+                if first_run_id_for_pincode is None:
+                    first_run_id_for_pincode = run_id
+
                 if sku_index == 0 and products:
                     product_rows_by_run[run_id] = pd.DataFrame(products)
 
                 summary_rows.append(
                     {
                         "Run ID": run_id,
-                        "Top 15 Run ID": run_id if sku_index == 0 else None,
+                        "Top 15 Run ID": first_run_id_for_pincode,
                         "Keyword": keyword,
                         "Selected SKU/FSN": selected_fsn,
                         "Selected Product": make_sku_display_name(selected_sku),
@@ -1239,6 +1330,15 @@ def average_delivery_days(series):
     values = [delivery_tat_to_days(x) for x in series]
     values = [x for x in values if x is not None]
     return f"{sum(values) / len(values):.1f} days" if values else "NA"
+
+
+def parse_keyword_input(keyword_input):
+    keywords = []
+    for value in re.split(r"[\n,]+", clean_text_value(keyword_input)):
+        keyword = clean_text_value(value)
+        if keyword and keyword.lower() not in [item.lower() for item in keywords]:
+            keywords.append(keyword)
+    return keywords
 
 
 def render_summary_filters(summary_df, prefix):
@@ -1431,16 +1531,19 @@ def show_marketing_dashboard(engine, db_read, db_execute, db_execute_many, clean
                 axis=1,
             )
 
-        c1, c2, c3, c4 = st.columns([2.2, 1.0, 1.3, 2.6])
+        c1, c2, c3 = st.columns([2.6, 1.3, 2.6])
         with c1:
-            keyword = st.text_input("Keyword", placeholder="Example: ceiling fan", key="marketing_keyword")
+            keyword_input = st.text_area(
+                "Keywords",
+                placeholder="Example: ceiling fan\nBLDC fan\npedestal fan",
+                height=110,
+                key="marketing_keyword",
+            )
         with c2:
-            run_for_all = st.checkbox("Run for all", value=True, key="marketing_run_for_all")
-        with c3:
             pincode_scope = st.selectbox("Pincode Scope", ["Sample 5", "Selected pincodes", "All"], key="marketing_pincode_scope")
 
         pincode_labels = active_pincodes_for_run["pincode_label"].tolist() if not active_pincodes_for_run.empty else []
-        with c4:
+        with c3:
             selected_pincode_labels = st.multiselect(
                 "Pincodes",
                 pincode_labels,
@@ -1457,6 +1560,12 @@ def show_marketing_dashboard(engine, db_read, db_execute, db_execute_many, clean
             selected_pincodes_df = active_pincodes_for_run.head(5).copy()
         else:
             selected_pincodes_df = active_pincodes_for_run.copy()
+
+        product_scope_col1, product_scope_col2 = st.columns([1, 4])
+        with product_scope_col1:
+            run_for_all = st.checkbox("Run all products", value=True, key="marketing_run_for_all")
+        with product_scope_col2:
+            st.caption("Turn off Run all products to choose one or more Type, Series, and Color values.")
 
         f1, f2, f3 = st.columns(3)
         type_options = sorted([x for x in sku_master["product_type"].dropna().unique().tolist() if clean_text_value(x)])
@@ -1490,26 +1599,46 @@ def show_marketing_dashboard(engine, db_read, db_execute, db_execute_many, clean
 
         a1, a2 = st.columns([4, 1])
         with a1:
+            keywords = parse_keyword_input(keyword_input)
             st.caption(
-                f"Flow: scrape Flipkart Top 15 once per selected pincode ({len(selected_pincodes_df)}), "
+                f"Flow: run {len(keywords)} keyword(s), scrape Flipkart Top 15 once per selected pincode ({len(selected_pincodes_df)}), "
                 f"then match {len(sku_scope)} selected FSNs locally."
             )
         with a2:
             run_check = st.button("Run Rank Check", disabled=sku_scope.empty or selected_pincodes_df.empty)
 
         if run_check:
-            if not clean_text_value(keyword):
-                st.error("Please enter a keyword.")
+            keywords = parse_keyword_input(keyword_input)
+            if not keywords:
+                st.error("Please enter at least one keyword.")
             else:
                 progress = st.progress(0)
                 status = st.empty()
+                summary_frames = []
+                product_rows_by_run = {}
+                failures = []
+                batch_ids = []
                 with st.spinner("Scraping Flipkart ranking data..."):
-                    summary_df, product_rows_by_run, batch_id, failures = process_keyword_rank_check_all_products(
-                        keyword, sku_scope, selected_pincodes_df, progress_bar=progress, status_box=status
-                    )
+                    for keyword_index, keyword in enumerate(keywords, start=1):
+                        status.info(f"Running keyword {keyword_index} of {len(keywords)}: {keyword}")
+                        keyword_summary_df, keyword_product_rows, batch_id, keyword_failures = process_keyword_rank_check_all_products(
+                            keyword,
+                            sku_scope,
+                            selected_pincodes_df,
+                            progress_bar=progress,
+                            status_box=status,
+                        )
+                        if not keyword_summary_df.empty:
+                            summary_frames.append(keyword_summary_df)
+                        product_rows_by_run.update(keyword_product_rows)
+                        failures.extend([f"{keyword}: {failure}" for failure in keyword_failures])
+                        if batch_id:
+                            batch_ids.append(batch_id)
+
+                summary_df = pd.concat(summary_frames, ignore_index=True) if summary_frames else pd.DataFrame()
                 st.session_state["marketing_summary_df"] = summary_df
                 st.session_state["marketing_product_rows_by_run"] = product_rows_by_run
-                st.session_state["marketing_batch_id"] = batch_id
+                st.session_state["marketing_batch_id"] = batch_ids[-1] if batch_ids else None
                 status.success("Rank check completed.")
                 if failures:
                     with st.expander("Scraping failures"):
