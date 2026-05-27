@@ -765,7 +765,32 @@ def get_chrome_executable_path():
     return None
 
 
+def get_remote_browser_config():
+    endpoint = clean_text_value(st.secrets.get("REMOTE_BROWSER_WS_ENDPOINT", ""))
+    protocol = clean_text_value(st.secrets.get("REMOTE_BROWSER_PROTOCOL", "")).lower()
+
+    if not endpoint:
+        return "", ""
+
+    if protocol not in ["playwright", "cdp"]:
+        protocol = "playwright" if "playwright" in endpoint.lower() else "cdp"
+
+    return endpoint, protocol
+
+
 def launch_chromium(playwright, launch_args):
+    remote_endpoint, remote_protocol = get_remote_browser_config()
+    if remote_endpoint:
+        try:
+            if remote_protocol == "playwright":
+                return playwright.chromium.connect(remote_endpoint, timeout=60000)
+            return playwright.chromium.connect_over_cdp(remote_endpoint, timeout=60000)
+        except Exception as exc:
+            raise RuntimeError(
+                "Could not connect to the configured remote browser endpoint. "
+                "Check REMOTE_BROWSER_WS_ENDPOINT and REMOTE_BROWSER_PROTOCOL in Streamlit secrets."
+            ) from exc
+
     try:
         return playwright.chromium.launch(**launch_args)
     except Exception as exc:
@@ -1548,6 +1573,15 @@ def show_marketing_dashboard(engine, db_read, db_execute, db_execute_many, clean
     h1.metric("Active Pincodes", len(active_pincodes))
     h2.metric("Available SKUs", len(sku_master))
     h3.metric("Marketplace", "Flipkart")
+
+    remote_browser_endpoint, remote_browser_protocol = get_remote_browser_config()
+    if remote_browser_endpoint:
+        st.caption(f"Scraper browser mode: remote {remote_browser_protocol.upper()} browser endpoint configured.")
+    else:
+        st.caption(
+            "Scraper browser mode: local Chromium. On Streamlit Cloud, configure REMOTE_BROWSER_WS_ENDPOINT "
+            "for reliable scraping."
+        )
 
     tab_run, tab_summary, tab_competition, tab_history, tab_manage = st.tabs(
         ["Run Check", "Visibility Summary", "Competition View", "History", "Manage Runs"]
