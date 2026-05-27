@@ -113,6 +113,61 @@ MARKETING_REQUIRED_COLUMNS = {
 }
 
 
+DEFAULT_MARKETING_PINCODES = [
+    {"pincode": "110001", "city": "New Delhi", "state": "Delhi", "zone": "North", "is_active": "Yes"},
+    {"pincode": "110085", "city": "Rohini Delhi", "state": "Delhi", "zone": "North", "is_active": "Yes"},
+    {"pincode": "122001", "city": "Gurugram", "state": "Haryana", "zone": "North", "is_active": "Yes"},
+    {"pincode": "201301", "city": "Noida", "state": "Uttar Pradesh", "zone": "North", "is_active": "Yes"},
+    {"pincode": "201010", "city": "Ghaziabad", "state": "Uttar Pradesh", "zone": "North", "is_active": "Yes"},
+    {"pincode": "160017", "city": "Chandigarh", "state": "Chandigarh", "zone": "North", "is_active": "Yes"},
+    {"pincode": "226001", "city": "Lucknow", "state": "Uttar Pradesh", "zone": "North", "is_active": "Yes"},
+    {"pincode": "208001", "city": "Kanpur", "state": "Uttar Pradesh", "zone": "North", "is_active": "Yes"},
+    {"pincode": "800001", "city": "Patna", "state": "Bihar", "zone": "East", "is_active": "Yes"},
+    {"pincode": "834001", "city": "Ranchi", "state": "Jharkhand", "zone": "East", "is_active": "Yes"},
+    {"pincode": "700001", "city": "Kolkata", "state": "West Bengal", "zone": "East", "is_active": "Yes"},
+    {"pincode": "781001", "city": "Guwahati", "state": "Assam", "zone": "East", "is_active": "Yes"},
+    {"pincode": "751001", "city": "Bhubaneswar", "state": "Odisha", "zone": "East", "is_active": "Yes"},
+    {"pincode": "400001", "city": "Mumbai", "state": "Maharashtra", "zone": "West", "is_active": "Yes"},
+    {"pincode": "400104", "city": "Goregaon Mumbai", "state": "Maharashtra", "zone": "West", "is_active": "Yes"},
+    {"pincode": "411001", "city": "Pune", "state": "Maharashtra", "zone": "West", "is_active": "Yes"},
+    {"pincode": "380001", "city": "Ahmedabad", "state": "Gujarat", "zone": "West", "is_active": "Yes"},
+    {"pincode": "395003", "city": "Surat", "state": "Gujarat", "zone": "West", "is_active": "Yes"},
+    {"pincode": "390001", "city": "Vadodara", "state": "Gujarat", "zone": "West", "is_active": "Yes"},
+    {"pincode": "302001", "city": "Jaipur", "state": "Rajasthan", "zone": "North", "is_active": "Yes"},
+    {"pincode": "313001", "city": "Udaipur", "state": "Rajasthan", "zone": "North", "is_active": "Yes"},
+    {"pincode": "452001", "city": "Indore", "state": "Madhya Pradesh", "zone": "Central", "is_active": "Yes"},
+    {"pincode": "462001", "city": "Bhopal", "state": "Madhya Pradesh", "zone": "Central", "is_active": "Yes"},
+    {"pincode": "474001", "city": "Gwalior", "state": "Madhya Pradesh", "zone": "Central", "is_active": "Yes"},
+    {"pincode": "492001", "city": "Raipur", "state": "Chhattisgarh", "zone": "Central", "is_active": "Yes"},
+    {"pincode": "440001", "city": "Nagpur", "state": "Maharashtra", "zone": "Central", "is_active": "Yes"},
+    {"pincode": "560001", "city": "Bengaluru", "state": "Karnataka", "zone": "South", "is_active": "Yes"},
+    {"pincode": "560037", "city": "Whitefield Bengaluru", "state": "Karnataka", "zone": "South", "is_active": "Yes"},
+    {"pincode": "600001", "city": "Chennai", "state": "Tamil Nadu", "zone": "South", "is_active": "Yes"},
+    {"pincode": "500001", "city": "Hyderabad", "state": "Telangana", "zone": "South", "is_active": "Yes"},
+    {"pincode": "500081", "city": "Hitech City Hyderabad", "state": "Telangana", "zone": "South", "is_active": "Yes"},
+    {"pincode": "682001", "city": "Kochi", "state": "Kerala", "zone": "South", "is_active": "Yes"},
+    {"pincode": "695001", "city": "Thiruvananthapuram", "state": "Kerala", "zone": "South", "is_active": "Yes"},
+    {"pincode": "641001", "city": "Coimbatore", "state": "Tamil Nadu", "zone": "South", "is_active": "Yes"},
+    {"pincode": "530001", "city": "Visakhapatnam", "state": "Andhra Pradesh", "zone": "South", "is_active": "Yes"},
+    {"pincode": "522001", "city": "Guntur", "state": "Andhra Pradesh", "zone": "South", "is_active": "Yes"},
+    {"pincode": "570001", "city": "Mysuru", "state": "Karnataka", "zone": "South", "is_active": "Yes"},
+    {"pincode": "324001", "city": "Kota", "state": "Rajasthan", "zone": "North", "is_active": "Yes"},
+    {"pincode": "342001", "city": "Jodhpur", "state": "Rajasthan", "zone": "North", "is_active": "Yes"},
+    {"pincode": "248001", "city": "Dehradun", "state": "Uttarakhand", "zone": "North", "is_active": "Yes"},
+    {"pincode": "143001", "city": "Amritsar", "state": "Punjab", "zone": "North", "is_active": "Yes"},
+    {"pincode": "141001", "city": "Ludhiana", "state": "Punjab", "zone": "North", "is_active": "Yes"},
+    {"pincode": "180001", "city": "Jammu", "state": "Jammu & Kashmir", "zone": "North", "is_active": "Yes"},
+    {"pincode": "190001", "city": "Srinagar", "state": "Jammu & Kashmir", "zone": "North", "is_active": "Yes"},
+    {"pincode": "635109", "city": "Hosur", "state": "Tamil Nadu", "zone": "South", "is_active": "Yes"},
+    {"pincode": "122413", "city": "Bhiwadi", "state": "Rajasthan", "zone": "North", "is_active": "Yes"},
+    {"pincode": "781005", "city": "Guwahati Belt", "state": "Assam", "zone": "East", "is_active": "Yes"},
+    {"pincode": "831001", "city": "Jamshedpur", "state": "Jharkhand", "zone": "East", "is_active": "Yes"},
+    {"pincode": "826001", "city": "Dhanbad", "state": "Jharkhand", "zone": "East", "is_active": "Yes"},
+    {"pincode": "799001", "city": "Agartala", "state": "Tripura", "zone": "East", "is_active": "Yes"},
+    {"pincode": "795001", "city": "Imphal", "state": "Manipur", "zone": "East", "is_active": "Yes"},
+]
+
+
 MARKETING_SETUP_SQL = """
 CREATE TABLE IF NOT EXISTS marketing_pincode_master (
     id SERIAL PRIMARY KEY,
@@ -437,19 +492,57 @@ def make_sku_display_name(row):
 
 def get_active_marketing_pincodes():
     ensure_marketing_tables()
-    df = _db_read(
-        """
-        SELECT id, pincode, city, state, zone, is_active
-        FROM marketing_pincode_master
-        WHERE LOWER(COALESCE(is_active, 'Yes')) IN ('yes', 'y', '1', 'true', 'active')
-        ORDER BY zone, state, city, pincode
-        """,
-        use_cache=False,
-    )
+    seed_default_marketing_pincodes()
+    try:
+        df = _db_read(
+            """
+            SELECT id, pincode, city, state, zone, is_active
+            FROM marketing_pincode_master
+            WHERE LOWER(COALESCE(is_active, 'Yes')) IN ('yes', 'y', '1', 'true', 'active')
+            ORDER BY zone, state, city, pincode
+            """,
+            use_cache=False,
+        )
+    except Exception:
+        df = pd.DataFrame()
 
-    if not df.empty:
-        df["pincode"] = df["pincode"].apply(clean_text_value)
+    if df.empty:
+        df = pd.DataFrame(DEFAULT_MARKETING_PINCODES)
+        df.insert(0, "id", range(1, len(df) + 1))
+
+    df["pincode"] = df["pincode"].apply(clean_text_value)
     return df
+
+
+def seed_default_marketing_pincodes():
+    try:
+        existing = _db_read(
+            "SELECT COUNT(*) AS row_count FROM marketing_pincode_master",
+            use_cache=False,
+        )
+    except Exception:
+        return 0
+
+    if not existing.empty and int(existing.iloc[0]["row_count"]) > 0:
+        return 0
+
+    try:
+        _db_execute_many(
+            """
+            INSERT INTO marketing_pincode_master (pincode, city, state, zone, is_active)
+            VALUES (:pincode, :city, :state, :zone, :is_active)
+            ON CONFLICT (pincode)
+            DO UPDATE SET
+                city = EXCLUDED.city,
+                state = EXCLUDED.state,
+                zone = EXCLUDED.zone,
+                is_active = EXCLUDED.is_active
+            """,
+            DEFAULT_MARKETING_PINCODES,
+        )
+        return len(DEFAULT_MARKETING_PINCODES)
+    except Exception:
+        return 0
 
 
 def import_pincode_master(uploaded_file):
@@ -1323,12 +1416,10 @@ def show_marketing_dashboard(engine, db_read, db_execute, db_execute_many, clean
 
     with tab_run:
         if active_pincodes.empty:
-            st.warning("No active pincodes found. Upload Marketing Pincode Master before running rank checks.")
-            uploaded_pincodes = st.file_uploader("Upload Marketing Pincode Master", type=["xlsx"], key="marketing_pincode_upload")
-            if uploaded_pincodes and st.button("Import Pincode Master"):
-                imported = import_pincode_master(uploaded_pincodes)
-                st.success(f"Imported {imported} pincode rows.")
-                st.rerun()
+            st.warning(
+                "No active pincodes found after automatic seeding. "
+                "Please refresh once; if this remains, check database insert permission for marketing_pincode_master."
+            )
 
         if sku_master.empty:
             st.warning("No SKU/FSN records found. Add SKUs to sku_master or allocation_tracker first.")
