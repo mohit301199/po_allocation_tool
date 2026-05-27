@@ -192,6 +192,27 @@ button[data-baseweb="tab"][aria-selected="true"] * {
     color: #475569 !important;
 }
 
+/* Sidebar sits on a dark gradient, so override the main-page dark text rules. */
+[data-testid="stSidebar"],
+[data-testid="stSidebar"] *,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] span,
+[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"],
+[data-testid="stSidebar"] div[data-testid="stMarkdownContainer"] *,
+[data-testid="stSidebar"] div[role="radiogroup"] *,
+[data-testid="stSidebar"] [data-testid="stWidgetLabel"] *,
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] * {
+    color: #f8fafc !important;
+}
+
+[data-testid="stSidebar"] div.stButton > button,
+[data-testid="stSidebar"] div.stButton > button *,
+[data-testid="stSidebar"] div.stButton > button:hover,
+[data-testid="stSidebar"] div.stButton > button:hover * {
+    color: #ffffff !important;
+}
+
 .success-box {
     background: #dcfce7;
     border-left: 6px solid #22c55e;
