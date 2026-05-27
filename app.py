@@ -149,6 +149,49 @@ div[data-testid="stWidgetLabel"] p {
     font-weight: 900;
 }
 
+/* Streamlit native widgets need explicit colors on the light app background. */
+[data-testid="stMetric"],
+[data-testid="stMetric"] *,
+[data-testid="stMetricLabel"],
+[data-testid="stMetricLabel"] *,
+[data-testid="stMetricValue"],
+[data-testid="stMetricValue"] * {
+    color: #0f172a !important;
+}
+
+[data-testid="stMetricValue"] {
+    font-weight: 900 !important;
+}
+
+[data-baseweb="tab-list"] button,
+[data-baseweb="tab-list"] button *,
+button[data-baseweb="tab"],
+button[data-baseweb="tab"] * {
+    color: #334155 !important;
+    font-weight: 800 !important;
+}
+
+[data-baseweb="tab-list"] button[aria-selected="true"],
+[data-baseweb="tab-list"] button[aria-selected="true"] *,
+button[data-baseweb="tab"][aria-selected="true"],
+button[data-baseweb="tab"][aria-selected="true"] * {
+    color: #ef4444 !important;
+}
+
+[data-testid="stAlert"],
+[data-testid="stAlert"] *,
+[data-testid="stMarkdownContainer"],
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li,
+[data-testid="stMarkdownContainer"] span {
+    color: #0f172a !important;
+}
+
+[data-testid="stCaptionContainer"],
+[data-testid="stCaptionContainer"] * {
+    color: #475569 !important;
+}
+
 .success-box {
     background: #dcfce7;
     border-left: 6px solid #22c55e;
