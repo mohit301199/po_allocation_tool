@@ -232,12 +232,7 @@ button[data-baseweb="tab"][aria-selected="true"] * {
 """, unsafe_allow_html=True)
 
 
-@st.cache_resource
-def get_cookie_manager():
-    return stx.CookieManager(key="po_allocation_cookie_manager")
-
-
-cookie_manager = get_cookie_manager()
+cookie_manager = stx.CookieManager(key="po_allocation_cookie_manager")
 
 
 def render_page_header(title, subtitle):
