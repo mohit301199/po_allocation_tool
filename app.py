@@ -24,8 +24,6 @@ from reportlab.platypus import PageBreak
 import tempfile
 import os
 
-from marketing_dashboard import show_marketing_dashboard
-
 
 REMEMBER_COOKIE_NAME = "po_allocation_remember_token"
 REMEMBER_LOGIN_DAYS = 30
@@ -317,14 +315,6 @@ def ensure_performance_indexes():
     index_queries = [
         """
         ALTER TABLE allocation_tracker
-        ADD COLUMN IF NOT EXISTS appointment_no TEXT
-        """,
-        """
-        ALTER TABLE allocation_tracker
-        ADD COLUMN IF NOT EXISTS appointment_date TEXT
-        """,
-        """
-        ALTER TABLE allocation_tracker
         ADD COLUMN IF NOT EXISTS fcn TEXT
         """,
         """
@@ -390,24 +380,6 @@ def ensure_performance_indexes():
         """
         CREATE INDEX IF NOT EXISTS idx_allocation_tracker_id
         ON allocation_tracker (id)
-        """,
-        """
-        CREATE TABLE IF NOT EXISTS appointment_tracker (
-            id SERIAL PRIMARY KEY,
-            upload_date TEXT,
-            appointment_no TEXT,
-            appointment_date TEXT,
-            po_no TEXT,
-            fsn TEXT,
-            rr_warehouse TEXT,
-            fk_warehouse TEXT,
-            appointment_qty REAL,
-            remark TEXT
-        )
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_appointment_tracker_match
-        ON appointment_tracker (fsn, fk_warehouse, po_no, appointment_date)
         """,
         """
         CREATE TABLE IF NOT EXISTS remembered_logins (
@@ -656,7 +628,6 @@ def get_allowed_screens(role):
     if role == "Admin":
         return [
             "Dashboard Summary",
-            "Marketing Dashboard",
             "Upload & Allocate",
             "Allocation Tracker",
             "Billing Summary",
@@ -667,7 +638,6 @@ def get_allowed_screens(role):
     if role == "Ops":
         return [
             "Dashboard Summary",
-            "Marketing Dashboard",
             "Upload & Allocate",
             "Allocation Tracker",
             "Billing Summary",
@@ -677,7 +647,6 @@ def get_allowed_screens(role):
     if role == "Billing":
         return [
             "Dashboard Summary",
-            "Marketing Dashboard",
             "Allocation Tracker",
             "Billing Summary",
             "Open Allocation Qty"
@@ -685,7 +654,6 @@ def get_allowed_screens(role):
 
     return [
         "Dashboard Summary",
-        "Marketing Dashboard",
         "Billing Summary",
         "Open Allocation Qty"
     ]
@@ -1015,60 +983,6 @@ def get_existing_po_allocation_qty():
     return db_read(query)
 
 
-def get_appointment_df():
-    try:
-        appointment_df = db_read("""
-        SELECT
-            a.*,
-            COALESCE(used.used_qty, 0) AS used_qty,
-            GREATEST(a.appointment_qty - COALESCE(used.used_qty, 0), 0) AS appointment_balance_qty
-        FROM appointment_tracker a
-        LEFT JOIN (
-            SELECT
-                appointment_no,
-                fsn,
-                fk_warehouse,
-                po_no,
-                SUM(allocated_qty) AS used_qty
-            FROM allocation_tracker
-            WHERE appointment_no IS NOT NULL
-            AND TRIM(appointment_no) <> ''
-            GROUP BY appointment_no, fsn, fk_warehouse, po_no
-        ) used
-        ON COALESCE(a.appointment_no, '') = COALESCE(used.appointment_no, '')
-        AND COALESCE(a.fsn, '') = COALESCE(used.fsn, '')
-        AND COALESCE(a.fk_warehouse, '') = COALESCE(used.fk_warehouse, '')
-        AND COALESCE(a.po_no, '') = COALESCE(used.po_no, '')
-        WHERE GREATEST(a.appointment_qty - COALESCE(used.used_qty, 0), 0) > 0
-        ORDER BY a.appointment_date, a.id
-        """)
-    except Exception:
-        appointment_df = pd.DataFrame()
-
-    return appointment_df
-
-
-def find_appointment_matches(appointment_df, po, fsn, rr, fk):
-    if appointment_df.empty:
-        return pd.DataFrame()
-
-    appt_df = appointment_df.copy()
-
-    for col in ["po_no", "fsn", "rr_warehouse", "fk_warehouse", "appointment_no"]:
-        if col not in appt_df.columns:
-            appt_df[col] = ""
-        appt_df[col] = appt_df[col].apply(clean_text)
-
-    mask = (
-        (appt_df["fsn"] == fsn) &
-        (appt_df["fk_warehouse"] == fk) &
-        ((appt_df["po_no"] == "") | (appt_df["po_no"] == po)) &
-        (appt_df["appointment_balance_qty"].apply(clean_number) > 0)
-    )
-
-    return appt_df[mask].copy()
-
-
 # =========================
 # BILLING SUMMARY
 # =========================
@@ -1129,8 +1043,6 @@ def get_sent_for_billing_download_df(tracker_df):
         "fk_warehouse",
         "sap_code",
         "fcn",
-        "appointment_no",
-        "appointment_date",
         "pending_amount",
         "allocated_qty",
         "billed_qty",
@@ -1156,8 +1068,6 @@ def get_sent_for_billing_download_df(tracker_df):
         "fk_warehouse": "FK Warehouse",
         "sap_code": "SAP Code",
         "fcn": "FCN",
-        "appointment_no": "Appointment No.",
-        "appointment_date": "Appointment Date",
         "pending_amount": "Pending Amount",
         "allocated_qty": "Allocated Qty.",
         "billed_qty": "Billed Qty.",
@@ -1186,8 +1096,6 @@ def get_billing_update_template_df(tracker_df):
         "fk_warehouse",
         "sap_code",
         "fcn",
-        "appointment_no",
-        "appointment_date",
         "allocated_qty",
         "sent_for_billing",
         "sent_date",
@@ -1213,8 +1121,6 @@ def get_billing_update_template_df(tracker_df):
         "fk_warehouse": "FK Warehouse",
         "sap_code": "SAP Code",
         "fcn": "FCN",
-        "appointment_no": "Appointment No.",
-        "appointment_date": "Appointment Date",
         "allocated_qty": "Allocated Qty.",
         "sent_for_billing": "Sent For Billing (Yes/No)",
         "sent_date": "Sent Date (YYYY-MM-DD)",
@@ -1226,7 +1132,7 @@ def get_billing_update_template_df(tracker_df):
         "remark": "Remark",
     })
 
-    for col in ["Sent Date (YYYY-MM-DD)", "Appointment Date", "Billing Date (YYYY-MM-DD)"]:
+    for col in ["Sent Date (YYYY-MM-DD)", "Billing Date (YYYY-MM-DD)"]:
         if col in template_df.columns:
             template_df[col] = pd.to_datetime(
                 template_df[col],
@@ -1272,7 +1178,6 @@ def apply_billing_update_upload(uploaded_df):
     column_aliases = {
         "Tracker ID": ["Tracker ID", "ID", "id"],
         "FCN": ["FCN", "fcn"],
-        "Appointment Date": ["Appointment Date", "Appointment Date (YYYY-MM-DD)", "appointment_date"],
         "Invoice No.": ["Invoice No.", "Invoice No", "Invoice Number", "invoice_no"],
         "Billing Date (YYYY-MM-DD)": ["Billing Date (YYYY-MM-DD)", "Billing Date", "billing_date"],
         "Billed Qty.": ["Billed Qty.", "Billed Qty", "Billing Qty", "billed_qty"],
@@ -1344,21 +1249,12 @@ def apply_billing_update_upload(uploaded_df):
         tracker_row = tracker_by_id[tracker_id]
         allocated_qty = clean_number(tracker_row.get("allocated_qty", 0))
         fcn = clean_text(row["FCN"])
-        appointment_date, appointment_date_error = parse_upload_date(row["Appointment Date"])
         billed_qty = clean_number(row["Billed Qty."])
         sent_for_billing = normalize_yes_no(row["Sent For Billing (Yes/No)"])
         billing_done = normalize_yes_no(row["Billing Done (Yes/No)"])
         invoice_no = clean_text(row["Invoice No."])
         remark = clean_text(row["Remark"])
         billing_date, date_error = parse_upload_date(row["Billing Date (YYYY-MM-DD)"])
-
-        if appointment_date_error:
-            error_rows.append({
-                "Excel Row": row_no + 2,
-                "Tracker ID": tracker_id,
-                "Error": appointment_date_error
-            })
-            continue
 
         if date_error:
             error_rows.append({
@@ -1415,7 +1311,6 @@ def apply_billing_update_upload(uploaded_df):
         update_fields = {
             "sent_for_billing": sent_for_billing,
             "fcn": fcn,
-            "appointment_date": appointment_date,
             "invoice_no": invoice_no,
             "billing_date": billing_date,
             "billing_done": billing_done,
@@ -1429,7 +1324,6 @@ def apply_billing_update_upload(uploaded_df):
             SET
                 sent_for_billing = :sent_for_billing,
                 fcn = :fcn,
-                appointment_date = :appointment_date,
                 invoice_no = :invoice_no,
                 billing_date = :billing_date,
                 billing_done = :billing_done,
@@ -1449,7 +1343,6 @@ def apply_billing_update_upload(uploaded_df):
             SET
                 sent_for_billing = :sent_for_billing,
                 fcn = :fcn,
-                appointment_date = :appointment_date,
                 invoice_no = :invoice_no,
                 billing_date = :billing_date,
                 billing_done = :billing_done,
@@ -1781,121 +1674,6 @@ def apply_sales_billing_update_upload(uploaded_df, tracker_df):
     }
 
 
-def prepare_appointment_upload(uploaded_df):
-    upload_df = normalize_columns(uploaded_df)
-
-    aliases = {
-        "Appointment No.": ["Appointment No.", "Appointment No", "Appointment Number"],
-        "Appointment Date": ["Appointment Date", "Delivery Date"],
-        "PO No.": ["PO No.", "PO No", "PONo", "PO"],
-        "FSN": ["FSN"],
-        "FK Warehouse": ["FK Warehouse", "FK FC"],
-        "Appointment Qty.": ["Appointment Qty.", "Appointment Qty", "Qty", "Quantity"],
-        "Remark": ["Remark", "Remarks"],
-    }
-
-    rename_map = {}
-
-    for target_col, options in aliases.items():
-        found_col = first_existing_column(upload_df, options)
-        if found_col:
-            rename_map[found_col] = target_col
-
-    upload_df = upload_df.rename(columns=rename_map)
-    required_cols = ["Appointment No.", "Appointment Date", "FSN", "FK Warehouse", "Appointment Qty."]
-    missing_cols = [col for col in required_cols if col not in upload_df.columns]
-
-    if missing_cols:
-        return pd.DataFrame(), missing_cols
-
-    for col in ["PO No.", "Remark"]:
-        if col not in upload_df.columns:
-            upload_df[col] = ""
-
-    for col in ["Appointment No.", "PO No.", "FSN", "FK Warehouse", "Remark"]:
-        upload_df[col] = upload_df[col].apply(clean_text)
-
-    upload_df["FK Warehouse"] = upload_df["FK Warehouse"].str.upper()
-    upload_df["Appointment Qty."] = upload_df["Appointment Qty."].apply(clean_number)
-    upload_df["Appointment Date"] = upload_df["Appointment Date"].apply(
-        lambda value: parse_upload_date(value)[0]
-    )
-
-    upload_df = upload_df[
-        (upload_df["Appointment No."] != "") &
-        (upload_df["Appointment Date"] != "") &
-        (upload_df["FSN"] != "") &
-        (upload_df["FK Warehouse"] != "") &
-        (upload_df["Appointment Qty."] > 0)
-    ]
-
-    return upload_df[
-        [
-            "Appointment No.",
-            "Appointment Date",
-            "PO No.",
-            "FSN",
-            "FK Warehouse",
-            "Appointment Qty.",
-            "Remark",
-        ]
-    ], []
-
-
-def save_appointment_upload(appointment_df):
-    saved_count = 0
-
-    for _, row in appointment_df.iterrows():
-        params = {
-            "appointment_no": row["Appointment No."],
-            "appointment_date": row["Appointment Date"],
-            "po_no": row["PO No."],
-            "fsn": row["FSN"],
-            "fk_warehouse": row["FK Warehouse"],
-            "appointment_qty": clean_number(row["Appointment Qty."]),
-            "remark": row["Remark"],
-            "upload_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-
-        db_execute("""
-        DELETE FROM appointment_tracker
-        WHERE appointment_no = :appointment_no
-        AND fsn = :fsn
-        AND COALESCE(fk_warehouse, '') = COALESCE(:fk_warehouse, '')
-        AND COALESCE(po_no, '') = COALESCE(:po_no, '')
-        """, params, clear_cache=False)
-
-        db_execute("""
-        INSERT INTO appointment_tracker (
-            upload_date,
-            appointment_no,
-            appointment_date,
-            po_no,
-            fsn,
-            fk_warehouse,
-            appointment_qty,
-            remark
-        )
-        VALUES (
-            :upload_date,
-            :appointment_no,
-            :appointment_date,
-            :po_no,
-            :fsn,
-            :fk_warehouse,
-            :appointment_qty,
-            :remark
-        )
-        """, params, clear_cache=False)
-
-        saved_count += 1
-
-    if saved_count > 0:
-        st.cache_data.clear()
-
-    return saved_count
-
-
 def get_manual_allocation_template_df():
     return pd.DataFrame({
         "PO No.": ["PO123"],
@@ -1908,8 +1686,6 @@ def get_manual_allocation_template_df():
         "SAP Code": ["SAP001"],
         "Pending Amount": [0],
         "Allocated Qty.": [10],
-        "Appointment No.": [""],
-        "Appointment Date": [""],
         "Remark": ["Manual emergency allocation"],
     })
 
@@ -1928,8 +1704,6 @@ def prepare_manual_allocation_upload(uploaded_df):
         "SAP Code": ["SAP Code", "Item Code", "Item"],
         "Pending Amount": ["Pending Amount", "Pending Amt"],
         "Allocated Qty.": ["Allocated Qty.", "Allocated Qty", "Qty"],
-        "Appointment No.": ["Appointment No.", "Appointment No"],
-        "Appointment Date": ["Appointment Date"],
         "Remark": ["Remark", "Remarks"],
     }
 
@@ -1947,11 +1721,11 @@ def prepare_manual_allocation_upload(uploaded_df):
     if missing_cols:
         return pd.DataFrame(), missing_cols
 
-    for col in ["Order ID", "Buyer Code", "Pending Amount", "Appointment No.", "Appointment Date", "Remark"]:
+    for col in ["Order ID", "Buyer Code", "Pending Amount", "Remark"]:
         if col not in manual_df.columns:
             manual_df[col] = "" if col != "Pending Amount" else 0
 
-    for col in ["PO No.", "Order ID", "Buyer Code", "FSN", "Title", "RR Warehouse", "FK Warehouse", "SAP Code", "Appointment No.", "Appointment Date", "Remark"]:
+    for col in ["PO No.", "Order ID", "Buyer Code", "FSN", "Title", "RR Warehouse", "FK Warehouse", "SAP Code", "Remark"]:
         manual_df[col] = manual_df[col].apply(clean_text)
 
     manual_df["RR Warehouse"] = manual_df["RR Warehouse"].str.upper()
@@ -1975,8 +1749,6 @@ def prepare_manual_allocation_upload(uploaded_df):
             "SAP Code",
             "Pending Amount",
             "Allocated Qty.",
-            "Appointment No.",
-            "Appointment Date",
             "Remark",
         ]
     ], []
@@ -1999,8 +1771,6 @@ def save_manual_allocation_upload(manual_df):
             "sap_code": row["SAP Code"],
             "pending_amount": clean_number(row["Pending Amount"]),
             "allocated_qty": clean_number(row["Allocated Qty."]),
-            "appointment_no": row["Appointment No."],
-            "appointment_date": row["Appointment Date"],
             "sent_for_billing": "No",
             "billing_done": "No",
             "remark": row["Remark"] or "Manual Emergency Allocation",
@@ -2016,8 +1786,8 @@ def save_manual_allocation_upload(manual_df):
         ]
 
         optional_columns = [
-            "order_id", "buyer_code", "pending_amount", "appointment_no",
-            "appointment_date", "billed_qty", "balance_to_bill", "billing_source"
+            "order_id", "buyer_code", "pending_amount",
+            "billed_qty", "balance_to_bill", "billing_source"
         ]
 
         for col in optional_columns:
@@ -2106,8 +1876,6 @@ def get_tracker_correction_template_df(tracker_df):
         "fk_warehouse",
         "sap_code",
         "fcn",
-        "appointment_no",
-        "appointment_date",
         "pending_amount",
         "allocated_qty",
         "billed_qty",
@@ -2137,8 +1905,6 @@ def get_tracker_correction_template_df(tracker_df):
         "fk_warehouse": "FK Warehouse",
         "sap_code": "SAP Code",
         "fcn": "FCN",
-        "appointment_no": "Appointment No.",
-        "appointment_date": "Appointment Date",
         "pending_amount": "Pending Amount",
         "allocated_qty": "Allocated Qty.",
         "billed_qty": "Billed Qty.",
@@ -2151,7 +1917,7 @@ def get_tracker_correction_template_df(tracker_df):
         "remark": "Remark",
     })
 
-    for col in ["Allocation Date", "Appointment Date", "Sent Date (YYYY-MM-DD)", "Billing Date (YYYY-MM-DD)"]:
+    for col in ["Allocation Date", "Sent Date (YYYY-MM-DD)", "Billing Date (YYYY-MM-DD)"]:
         if col in template_df.columns:
             template_df[col] = pd.to_datetime(
                 template_df[col],
@@ -2194,8 +1960,6 @@ def apply_tracker_correction_upload(uploaded_df):
         "FK Warehouse": ["FK Warehouse", "FK FC", "fk_warehouse"],
         "SAP Code": ["SAP Code", "Item Code", "sap_code"],
         "FCN": ["FCN", "fcn"],
-        "Appointment No.": ["Appointment No.", "Appointment No", "appointment_no"],
-        "Appointment Date": ["Appointment Date", "appointment_date"],
         "Pending Amount": ["Pending Amount", "Pending Amt", "pending_amount"],
         "Allocated Qty.": ["Allocated Qty.", "Allocated Qty", "allocated_qty"],
         "Billed Qty.": ["Billed Qty.", "Billed Qty", "Billing Qty", "billed_qty"],
@@ -2242,8 +2006,6 @@ def apply_tracker_correction_upload(uploaded_df):
         "fk_warehouse": "FK Warehouse",
         "sap_code": "SAP Code",
         "fcn": "FCN",
-        "appointment_no": "Appointment No.",
-        "appointment_date": "Appointment Date",
         "pending_amount": "Pending Amount",
         "allocated_qty": "Allocated Qty.",
         "billed_qty": "Billed Qty.",
@@ -2257,7 +2019,7 @@ def apply_tracker_correction_upload(uploaded_df):
     }
 
     numeric_columns = {"pending_amount", "allocated_qty", "billed_qty", "balance_to_bill"}
-    date_columns = {"allocation_date", "appointment_date", "sent_date", "billing_date"}
+    date_columns = {"allocation_date", "sent_date", "billing_date"}
     yes_no_columns = {"sent_for_billing", "billing_done"}
 
     replaced_rows = 0
@@ -3091,7 +2853,6 @@ def run_allocation(pending_df, stock_df):
 
     stock_df["usable_stock"] = stock_df["Stock"] - stock_df["open_alloc_qty"]
     stock_df["usable_stock"] = stock_df["usable_stock"].apply(lambda x: max(x, 0))
-    appointment_df = get_appointment_df()
 
     for _, p in pending_df.iterrows():
         po = clean_text(p["PO No."])
@@ -3111,31 +2872,6 @@ def run_allocation(pending_df, stock_df):
         allocated_anything = False
         pending_shown_for_demand = False
         allocation_row_indexes = []
-        appointment_matches = find_appointment_matches(appointment_df, po, fsn, rr, fk)
-
-        if not appointment_matches.empty:
-            allocation_contexts = []
-
-            for appt_idx, appt in appointment_matches.iterrows():
-                appointment_balance = clean_number(appt["appointment_balance_qty"])
-
-                if appointment_balance <= 0:
-                    continue
-
-                allocation_contexts.append({
-                    "appointment_index": appt_idx,
-                    "appointment_no": clean_text(appt["appointment_no"]),
-                    "appointment_date": clean_text(appt["appointment_date"]),
-                    "qty": appointment_balance,
-                })
-
-        else:
-            allocation_contexts = [{
-                "appointment_index": None,
-                "appointment_no": "",
-                "appointment_date": "",
-                "qty": pending_qty,
-            }]
 
         if pending_qty <= 0:
             result.append({
@@ -3147,8 +2883,6 @@ def run_allocation(pending_df, stock_df):
                 "RR Warehouse": rr,
                 "FK Warehouse": fk,
                 "SAP Code": "",
-                "Appointment No.": "",
-                "Appointment Date": "",
                 "Pending Qty.": pending_qty,
                 "Pending Amount": 0,
                 "Allocated Qty.": 0,
@@ -3167,65 +2901,43 @@ def run_allocation(pending_df, stock_df):
             (stock_df["usable_stock"] > 0)
         ]
 
-        for appointment_context in allocation_contexts:
+        for idx, s in matching.iterrows():
             if remaining <= 0:
                 break
 
-            appointment_remaining = min(
-                remaining,
-                clean_number(appointment_context["qty"])
-            )
+            usable = clean_number(stock_df.loc[idx, "usable_stock"])
+            alloc = min(usable, remaining)
 
-            if appointment_remaining <= 0:
-                continue
+            if alloc > 0:
+                row_pending_qty = pending_qty if not pending_shown_for_demand else 0
+                row_pending_amount = pending_qty * pending_unit_amount if not pending_shown_for_demand else 0
 
-            for idx, s in matching.iterrows():
-                if remaining <= 0 or appointment_remaining <= 0:
-                    break
+                allocated_anything = True
+                pending_shown_for_demand = True
+                stock_df.loc[idx, "usable_stock"] = usable - alloc
+                remaining -= alloc
 
-                usable = clean_number(stock_df.loc[idx, "usable_stock"])
-                alloc = min(usable, remaining, appointment_remaining)
+                allocation_row_indexes.append(len(result))
 
-                if alloc > 0:
-                    row_pending_qty = pending_qty if not pending_shown_for_demand else 0
-                    row_pending_amount = pending_qty * pending_unit_amount if not pending_shown_for_demand else 0
-
-                    allocated_anything = True
-                    pending_shown_for_demand = True
-                    stock_df.loc[idx, "usable_stock"] = usable - alloc
-                    remaining -= alloc
-                    appointment_remaining -= alloc
-
-                    appt_idx = appointment_context["appointment_index"]
-
-                    if appt_idx is not None:
-                        appointment_df.loc[appt_idx, "appointment_balance_qty"] = (
-                            clean_number(appointment_df.loc[appt_idx, "appointment_balance_qty"]) - alloc
-                        )
-
-                    allocation_row_indexes.append(len(result))
-
-                    result.append({
-                        "PO No.": po,
-                        "Order ID": order_id,
-                        "Buyer Code": buyer_code,
-                        "FSN": fsn,
-                        "Title": title,
-                        "RR Warehouse": rr,
-                        "FK Warehouse": fk,
-                        "SAP Code": s["SAP Code"],
-                        "Appointment No.": appointment_context["appointment_no"],
-                        "Appointment Date": appointment_context["appointment_date"],
-                        "Pending Qty.": row_pending_qty,
-                        "Pending Amount": row_pending_amount,
-                        "Allocated Qty.": alloc,
-                        "Balance Pending Qty.": 0,
-                        "Current Stock": s["Stock"],
-                        "Open Allocation Qty": s["open_alloc_qty"],
-                        "Usable Stock Before": usable,
-                        "Usable Stock After": usable - alloc,
-                        "Status": "Allocated"
-                    })
+                result.append({
+                    "PO No.": po,
+                    "Order ID": order_id,
+                    "Buyer Code": buyer_code,
+                    "FSN": fsn,
+                    "Title": title,
+                    "RR Warehouse": rr,
+                    "FK Warehouse": fk,
+                    "SAP Code": s["SAP Code"],
+                    "Pending Qty.": row_pending_qty,
+                    "Pending Amount": row_pending_amount,
+                    "Allocated Qty.": alloc,
+                    "Balance Pending Qty.": 0,
+                    "Current Stock": s["Stock"],
+                    "Open Allocation Qty": s["open_alloc_qty"],
+                    "Usable Stock Before": usable,
+                    "Usable Stock After": usable - alloc,
+                    "Status": "Allocated"
+                })
 
         if allocation_row_indexes:
             result[allocation_row_indexes[-1]]["Balance Pending Qty."] = remaining
@@ -3240,8 +2952,6 @@ def run_allocation(pending_df, stock_df):
                 "RR Warehouse": rr,
                 "FK Warehouse": fk,
                 "SAP Code": "",
-                "Appointment No.": "",
-                "Appointment Date": "",
                 "Pending Qty.": pending_qty,
                 "Pending Amount": pending_qty * pending_unit_amount,
                 "Allocated Qty.": 0,
@@ -3269,8 +2979,6 @@ def save_allocation(df):
     has_billed_qty = "billed_qty" in tracker_columns
     has_balance_to_bill = "balance_to_bill" in tracker_columns
     has_billing_source = "billing_source" in tracker_columns
-    has_appointment_no = "appointment_no" in tracker_columns
-    has_appointment_date = "appointment_date" in tracker_columns
 
     for _, r in df.iterrows():
         if clean_number(r["Allocated Qty."]) <= 0:
@@ -3338,16 +3046,6 @@ def save_allocation(df):
             insert_columns.insert(insert_at, "pending_amount")
             value_keys.insert(insert_at, ":pending_amount")
             params["pending_amount"] = clean_number(r.get("Pending Amount", 0))
-
-        if has_appointment_no:
-            insert_columns.insert(-3, "appointment_no")
-            value_keys.insert(-3, ":appointment_no")
-            params["appointment_no"] = r.get("Appointment No.", "")
-
-        if has_appointment_date:
-            insert_columns.insert(-3, "appointment_date")
-            value_keys.insert(-3, ":appointment_date")
-            params["appointment_date"] = r.get("Appointment Date", "")
 
         if has_billed_qty:
             insert_columns.insert(-3, "billed_qty")
@@ -3553,207 +3251,6 @@ This will permanently delete all saved allocation tracker data.
 
 
 # =====================================================
-# MARKETING DASHBOARD
-# =====================================================
-
-elif menu == "Marketing Dashboard":
-    show_marketing_dashboard(
-        engine,
-        db_read,
-        db_execute,
-        db_execute_many,
-        clean_text,
-        clean_number,
-    )
-    st.stop()
-
-    render_page_header(
-        "Marketing Dashboard",
-        "A product and customer view of allocation, billing, and pending billing performance."
-    )
-
-    tracker = get_tracker_df()
-
-    if tracker.empty:
-        st.info("No tracker data available yet.")
-
-    else:
-        marketing_df = tracker.copy()
-
-        for col in ["allocated_qty", "billed_qty", "balance_to_bill", "pending_amount"]:
-            if col not in marketing_df.columns:
-                marketing_df[col] = 0
-            marketing_df[col] = marketing_df[col].apply(clean_number)
-
-        for col in ["buyer_code", "fk_warehouse", "rr_warehouse", "fsn", "title", "sap_code"]:
-            if col not in marketing_df.columns:
-                marketing_df[col] = ""
-            marketing_df[col] = marketing_df[col].apply(clean_text)
-
-        marketing_df["Billing Status"] = marketing_df.apply(
-            lambda row: (
-                "Fully Billed"
-                if clean_number(row.get("balance_to_bill", 0)) <= 0 and clean_number(row.get("allocated_qty", 0)) > 0
-                else "Partially Billed"
-                if clean_number(row.get("billed_qty", 0)) > 0
-                else "Pending Billing"
-            ),
-            axis=1
-        )
-
-        total_allocated = marketing_df["allocated_qty"].sum()
-        total_billed = marketing_df["billed_qty"].sum()
-        total_balance = marketing_df["balance_to_bill"].sum()
-        billing_rate = (total_billed / total_allocated * 100) if total_allocated else 0
-
-        c1, c2, c3, c4 = st.columns(4)
-
-        c1.markdown(f"""
-        <div class="metric-card blue">
-            <div class="metric-title">Allocated Qty</div>
-            <div class="metric-value">{total_allocated:,.0f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        c2.markdown(f"""
-        <div class="metric-card green">
-            <div class="metric-title">Billed Qty</div>
-            <div class="metric-value">{total_billed:,.0f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        c3.markdown(f"""
-        <div class="metric-card orange">
-            <div class="metric-title">Balance To Bill</div>
-            <div class="metric-value">{total_balance:,.0f}</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        c4.markdown(f"""
-        <div class="metric-card red">
-            <div class="metric-title">Billing %</div>
-            <div class="metric-value">{billing_rate:,.1f}%</div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("---")
-
-        filter_c1, filter_c2, filter_c3 = st.columns(3)
-
-        with filter_c1:
-            buyer_options = sorted([x for x in marketing_df["buyer_code"].unique() if x != ""])
-            selected_buyer = st.multiselect("Buyer Code", buyer_options)
-
-        with filter_c2:
-            fk_options = sorted([x for x in marketing_df["fk_warehouse"].unique() if x != ""])
-            selected_fk = st.multiselect("FK Warehouse", fk_options)
-
-        with filter_c3:
-            status_options = sorted(marketing_df["Billing Status"].unique())
-            selected_status = st.multiselect("Billing Status", status_options)
-
-        filtered_df = marketing_df.copy()
-
-        if selected_buyer:
-            filtered_df = filtered_df[filtered_df["buyer_code"].isin(selected_buyer)]
-
-        if selected_fk:
-            filtered_df = filtered_df[filtered_df["fk_warehouse"].isin(selected_fk)]
-
-        if selected_status:
-            filtered_df = filtered_df[filtered_df["Billing Status"].isin(selected_status)]
-
-        st.caption(f"Showing {len(filtered_df):,} tracker rows after filters.")
-
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "Buyer View",
-            "Warehouse View",
-            "Product View",
-            "Pending Billing Detail"
-        ])
-
-        def build_summary(group_cols):
-            if filtered_df.empty:
-                return pd.DataFrame()
-
-            summary_df = filtered_df.groupby(
-                group_cols,
-                dropna=False,
-                as_index=False
-            ).agg(
-                Allocated_Qty=("allocated_qty", "sum"),
-                Billed_Qty=("billed_qty", "sum"),
-                Balance_To_Bill=("balance_to_bill", "sum"),
-                Pending_Amount=("pending_amount", "sum"),
-                Tracker_Rows=("id", "count")
-            )
-
-            summary_df["Billing %"] = summary_df.apply(
-                lambda row: (
-                    clean_number(row["Billed_Qty"]) /
-                    clean_number(row["Allocated_Qty"]) * 100
-                ) if clean_number(row["Allocated_Qty"]) else 0,
-                axis=1
-            )
-
-            return summary_df.sort_values(
-                by=["Balance_To_Bill", "Allocated_Qty"],
-                ascending=[False, False]
-            )
-
-        with tab1:
-            st.subheader("Buyer Code Summary")
-            buyer_summary = build_summary(["buyer_code"])
-            st.dataframe(buyer_summary, use_container_width=True)
-
-        with tab2:
-            st.subheader("Warehouse Summary")
-            warehouse_summary = build_summary(["fk_warehouse", "rr_warehouse"])
-            st.dataframe(warehouse_summary, use_container_width=True)
-
-        with tab3:
-            st.subheader("Product Summary")
-            product_summary = build_summary(["fsn", "title", "sap_code"])
-            st.dataframe(product_summary.head(500), use_container_width=True)
-
-        with tab4:
-            st.subheader("Pending Billing Detail")
-            pending_detail = filtered_df[
-                filtered_df["balance_to_bill"] > 0
-            ].copy()
-
-            detail_cols = [
-                "po_no",
-                "order_id",
-                "buyer_code",
-                "fsn",
-                "title",
-                "rr_warehouse",
-                "fk_warehouse",
-                "sap_code",
-                "allocated_qty",
-                "billed_qty",
-                "balance_to_bill",
-                "sent_date",
-                "remark",
-            ]
-            detail_cols = [col for col in detail_cols if col in pending_detail.columns]
-
-            st.dataframe(
-                pending_detail[detail_cols].head(500),
-                use_container_width=True
-            )
-
-            if not pending_detail.empty:
-                st.download_button(
-                    "Download Pending Billing Detail",
-                    data=to_excel(pending_detail[detail_cols]),
-                    file_name="marketing_pending_billing_detail.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
-
-# =====================================================
 # UPLOAD & ALLOCATE
 # =====================================================
 
@@ -3802,78 +3299,6 @@ elif menu == "Upload & Allocate":
             "to FGI/ECOM plus the approved SITE list."
         )
 
-    st.markdown("---")
-    st.subheader("Appointment Upload")
-    st.caption(
-        "Upload Flipkart appointment quantity before running allocation. "
-        "When an appointment exists for FSN/FK warehouse, allocation is capped by appointment balance."
-    )
-
-    appointment_sample = pd.DataFrame({
-        "Appointment No.": ["APT123"],
-        "Appointment Date": ["2026-05-25"],
-        "PO No.": ["PO123"],
-        "FSN": ["FSN001"],
-        "FK Warehouse": ["FK1"],
-        "Appointment Qty.": [50],
-        "Remark": ["Scheduled delivery appointment"],
-    })
-
-    with st.expander("Appointment upload format"):
-        st.dataframe(appointment_sample, use_container_width=True)
-        st.download_button(
-            "Download Appointment Upload Template",
-            data=to_excel(appointment_sample),
-            file_name="appointment_upload_template.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-    appointment_file = st.file_uploader(
-        "Upload Appointment File",
-        type=["xlsx"],
-        key="appointment_file"
-    )
-
-    if appointment_file is not None:
-        appointment_uploaded_df, appointment_read_error = read_uploaded_excel(
-            appointment_file,
-            "Appointment file"
-        )
-
-        if appointment_read_error:
-            st.error(appointment_read_error)
-
-        else:
-            appointment_df, missing_appointment_cols = prepare_appointment_upload(
-                appointment_uploaded_df
-            )
-
-            if missing_appointment_cols:
-                st.error(f"Missing columns in Appointment file: {missing_appointment_cols}")
-
-            elif appointment_df.empty:
-                st.warning("No valid appointment rows found.")
-
-            else:
-                st.dataframe(appointment_df, use_container_width=True)
-
-                if st.button("Save Appointment Upload"):
-                    saved_appointments = save_appointment_upload(appointment_df)
-                    log_activity("appointment_upload", f"{saved_appointments} appointment rows saved")
-                    st.success(f"{saved_appointments} appointment rows saved successfully")
-                    st.rerun()
-
-    active_appointments = get_appointment_df()
-
-    if not active_appointments.empty:
-        with st.expander("Active appointment balance"):
-            appointment_display = active_appointments.drop(
-                columns=["rr_warehouse"],
-                errors="ignore"
-            )
-            st.dataframe(appointment_display, use_container_width=True)
-
-    st.markdown("---")
     st.subheader("Upload Files")
 
     c1, c2 = st.columns(2)
@@ -4373,8 +3798,6 @@ elif menu == "Allocation Tracker":
                 "fk_warehouse",
                 "sap_code",
                 "fcn",
-                "appointment_no",
-                "appointment_date",
                 "pending_amount",
                 "allocated_qty",
                 "billed_qty",
@@ -4522,8 +3945,6 @@ elif menu == "Allocation Tracker":
                     "fk_warehouse": st.column_config.TextColumn("FK Warehouse", disabled=True),
                     "sap_code": st.column_config.TextColumn("SAP Code", disabled=True),
                     "fcn": st.column_config.TextColumn("FCN", disabled=True),
-                    "appointment_no": st.column_config.TextColumn("Appointment No.", disabled=True),
-                    "appointment_date": st.column_config.TextColumn("Appointment Date", disabled=True),
                     "pending_amount": st.column_config.NumberColumn("Pending Amount", disabled=True),
                     "allocated_qty": st.column_config.NumberColumn("Allocated Qty.", disabled=True),
                     "billed_qty": st.column_config.NumberColumn("Billed Qty."),
