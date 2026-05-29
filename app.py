@@ -2,8 +2,11 @@ import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine, text
 import bcrypt
-from datetime import datetime
+import hashlib
+import secrets as token_secrets
+from datetime import datetime, timedelta
 from io import BytesIO
+import extra_streamlit_components as stx
 
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
@@ -22,6 +25,10 @@ import tempfile
 import os
 
 from marketing_dashboard import show_marketing_dashboard
+
+
+REMEMBER_COOKIE_NAME = "po_allocation_remember_token"
+REMEMBER_LOGIN_DAYS = 30
 
 
 # =====================================================
@@ -225,6 +232,14 @@ button[data-baseweb="tab"][aria-selected="true"] * {
 """, unsafe_allow_html=True)
 
 
+@st.cache_resource
+def get_cookie_manager():
+    return stx.CookieManager(key="po_allocation_cookie_manager")
+
+
+cookie_manager = get_cookie_manager()
+
+
 def render_page_header(title, subtitle):
     st.markdown(f"""
     <div class="page-header">
@@ -399,6 +414,22 @@ def ensure_performance_indexes():
         CREATE INDEX IF NOT EXISTS idx_appointment_tracker_match
         ON appointment_tracker (fsn, fk_warehouse, po_no, appointment_date)
         """,
+        """
+        CREATE TABLE IF NOT EXISTS remembered_logins (
+            token_hash TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_remembered_logins_username
+        ON remembered_logins (username)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_remembered_logins_expires_at
+        ON remembered_logins (expires_at)
+        """,
     ]
 
     for query in index_queries:
@@ -443,6 +474,87 @@ def auth_clean_text(x):
 def get_user_count():
     result = db_read("SELECT COUNT(*) AS user_count FROM app_users")
     return int(result.iloc[0]["user_count"])
+
+
+def hash_remember_token(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_remember_login(username):
+    token = token_secrets.token_urlsafe(48)
+    token_hash = hash_remember_token(token)
+    expires_at = datetime.now() + timedelta(days=REMEMBER_LOGIN_DAYS)
+
+    db_execute("""
+        DELETE FROM remembered_logins
+        WHERE username = :username
+        OR expires_at <= NOW()
+    """, {
+        "username": username
+    }, clear_cache=False)
+
+    db_execute("""
+        INSERT INTO remembered_logins (token_hash, username, expires_at)
+        VALUES (:token_hash, :username, :expires_at)
+    """, {
+        "token_hash": token_hash,
+        "username": username,
+        "expires_at": expires_at,
+    }, clear_cache=False)
+
+    cookie_manager.set(
+        REMEMBER_COOKIE_NAME,
+        token,
+        expires_at=expires_at,
+        same_site="strict"
+    )
+
+
+def clear_remember_login():
+    token = cookie_manager.get(REMEMBER_COOKIE_NAME)
+
+    if token:
+        db_execute("""
+            DELETE FROM remembered_logins
+            WHERE token_hash = :token_hash
+        """, {
+            "token_hash": hash_remember_token(token)
+        }, clear_cache=False)
+
+    cookie_manager.delete(REMEMBER_COOKIE_NAME)
+
+
+def try_remembered_login():
+    if st.session_state.get("logged_in", False):
+        return
+
+    token = cookie_manager.get(REMEMBER_COOKIE_NAME)
+
+    if not token:
+        return
+
+    remembered_user = db_read("""
+        SELECT u.username, u.role
+        FROM remembered_logins r
+        JOIN app_users u
+        ON u.username = r.username
+        WHERE r.token_hash = :token_hash
+        AND r.expires_at > NOW()
+        AND u.active = TRUE
+        LIMIT 1
+    """, {
+        "token_hash": hash_remember_token(token)
+    }, use_cache=False)
+
+    if remembered_user.empty:
+        clear_remember_login()
+        return
+
+    user = remembered_user.iloc[0]
+    st.session_state.logged_in = True
+    st.session_state.username = user["username"]
+    st.session_state.role = user["role"]
+    log_activity("remembered_login", "User logged in with remember me")
 
 
 def log_activity(action, details=""):
@@ -507,6 +619,10 @@ def login_screen():
 
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
+    remember_me = st.checkbox(
+        f"Remember me for {REMEMBER_LOGIN_DAYS} days",
+        value=True
+    )
 
     if st.button("Login"):
         username = auth_clean_text(username)
@@ -531,6 +647,12 @@ def login_screen():
         st.session_state.logged_in = True
         st.session_state.username = user["username"]
         st.session_state.role = user["role"]
+
+        if remember_me:
+            create_remember_login(user["username"])
+        else:
+            clear_remember_login()
+
         log_activity("login", "User logged in")
         st.rerun()
 
@@ -581,6 +703,10 @@ if "logged_in" not in st.session_state:
 if get_user_count() == 0:
     create_first_admin_screen()
     st.stop()
+
+
+if not st.session_state.logged_in:
+    try_remembered_login()
 
 
 if not st.session_state.logged_in:
@@ -3279,6 +3405,7 @@ st.sidebar.write(f"Role: {st.session_state.role}")
 
 if st.sidebar.button("Logout"):
     log_activity("logout", "User logged out")
+    clear_remember_login()
     st.session_state.clear()
     st.rerun()
 

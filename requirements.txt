@@ -5,6 +5,7 @@ reportlab
 sqlalchemy
 psycopg2-binary
 bcrypt
+extra-streamlit-components
 python-barcode
 Pillow
 playwright
