@@ -452,7 +452,7 @@ def get_remember_token_from_url():
     if isinstance(token, list):
         token = token[0] if token else ""
 
-    return clean_text(token)
+    return auth_clean_text(token)
 
 
 def set_remember_token_in_url(token):
