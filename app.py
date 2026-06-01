@@ -3365,17 +3365,17 @@ elif menu == "Upload & Allocate":
     c1, c2 = st.columns(2)
 
     with c1:
-        stock_file = st.file_uploader(
-            "Upload Stock File",
-            type=["xlsx"],
-            key="stock_file"
-        )
-
-    with c2:
         pending_file = st.file_uploader(
             "Upload Pending Qty File",
             type=["xlsx"],
             key="pending_file"
+        )
+
+    with c2:
+        stock_file = st.file_uploader(
+            "Upload Stock File",
+            type=["xlsx"],
+            key="stock_file"
         )
 
     if stock_file is not None:
