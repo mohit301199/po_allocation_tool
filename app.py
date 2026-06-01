@@ -1032,15 +1032,20 @@ def get_tracker_df():
 
 def get_open_allocation_qty():
     tracker_columns = get_allocation_tracker_columns()
+    allocation_type_expr = (
+        "COALESCE(allocation_type, 'Physical Stock')"
+        if "allocation_type" in tracker_columns
+        else "'Physical Stock'"
+    )
 
     if "billed_qty" in tracker_columns:
-        query = """
+        query = f"""
         WITH tracker_balance AS (
             SELECT
                 fsn,
                 rr_warehouse,
                 sap_code,
-                COALESCE(allocation_type, 'Physical Stock') AS allocation_type,
+                {allocation_type_expr} AS allocation_type,
                 sent_for_billing,
                 GREATEST(allocated_qty - COALESCE(billed_qty, 0), 0) AS balance_qty
             FROM allocation_tracker
@@ -1078,21 +1083,21 @@ def get_open_allocation_qty():
         """
 
     else:
-        query = """
+        query = f"""
         SELECT
             fsn,
             rr_warehouse,
             sap_code,
             SUM(
                 CASE
-                    WHEN COALESCE(allocation_type, 'Physical Stock') = 'GIT Stock'
+                    WHEN {allocation_type_expr} = 'GIT Stock'
                     THEN allocated_qty
                     ELSE 0
                 END
             ) AS git_open_alloc_qty,
             SUM(
                 CASE
-                    WHEN COALESCE(allocation_type, 'Physical Stock') <> 'GIT Stock'
+                    WHEN {allocation_type_expr} <> 'GIT Stock'
                     AND sent_for_billing = 'Yes'
                     THEN allocated_qty
                     ELSE 0
@@ -1100,7 +1105,7 @@ def get_open_allocation_qty():
             ) AS physical_open_alloc_qty,
             SUM(
                 CASE
-                    WHEN COALESCE(allocation_type, 'Physical Stock') = 'GIT Stock'
+                    WHEN {allocation_type_expr} = 'GIT Stock'
                     OR sent_for_billing = 'Yes'
                     THEN allocated_qty
                     ELSE 0
