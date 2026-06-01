@@ -338,12 +338,20 @@ def ensure_performance_indexes():
         ADD COLUMN IF NOT EXISTS billing_source TEXT
         """,
         """
+        ALTER TABLE allocation_tracker
+        ADD COLUMN IF NOT EXISTS allocation_type TEXT DEFAULT 'Physical Stock'
+        """,
+        """
         CREATE INDEX IF NOT EXISTS idx_allocation_tracker_sent_billing
         ON allocation_tracker (sent_for_billing, billing_done)
         """,
         """
         CREATE INDEX IF NOT EXISTS idx_allocation_tracker_fsn_rr_sap
         ON allocation_tracker (fsn, rr_warehouse, sap_code)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_allocation_tracker_stock_type
+        ON allocation_tracker (allocation_type, billing_done)
         """,
         """
         CREATE INDEX IF NOT EXISTS idx_allocation_tracker_po_fsn_rr_fk
@@ -816,10 +824,25 @@ def standardize_stock_file(stock_df, show_messages=False):
     old_format_cols = ["FSN", "RR Warehouse", "SAP Code", "Stock"]
 
     if all(col in stock_df.columns for col in old_format_cols):
+        stock_df = stock_df.copy()
+        if "GIT Stock" not in stock_df.columns:
+            stock_df["GIT Stock"] = 0
         return stock_df
 
     item_code_col = first_existing_column(stock_df, ["Item Code", "Item code", "ItemCode"])
     available_qty_col = first_existing_column(stock_df, ["Available Qty", "Available Qty.", "AvailableQty"])
+    git_qty_col = first_existing_column(
+        stock_df,
+        [
+            "InTransit Stock",
+            "InTransit Stock.",
+            "In Transit Stock",
+            "In-Transit Stock",
+            "InTransitStock",
+            "GIT Stock",
+            "GIT Qty",
+        ]
+    )
     site_col = first_existing_column(stock_df, ["Site", "SITE"])
     custom_location_col = first_existing_column(
         stock_df,
@@ -841,16 +864,21 @@ def standardize_stock_file(stock_df, show_messages=False):
     original_rows = len(stock_df)
 
     stock_df = stock_df.copy()
+    if git_qty_col is None:
+        git_qty_col = "_GIT Stock"
+        stock_df[git_qty_col] = 0
+
     stock_df[item_code_col] = stock_df[item_code_col].apply(clean_text)
     stock_df[site_col] = stock_df[site_col].apply(clean_text).str.upper()
     stock_df[custom_location_col] = stock_df[custom_location_col].apply(clean_text).str.upper()
     stock_df[fsn_col] = stock_df[fsn_col].apply(clean_text)
     stock_df[available_qty_col] = stock_df[available_qty_col].apply(clean_number)
+    stock_df[git_qty_col] = stock_df[git_qty_col].apply(clean_number)
 
     stock_df = stock_df[
         stock_df[custom_location_col].isin(ALLOWED_STOCK_LOCATIONS) &
         stock_df[site_col].isin(ALLOWED_STOCK_SITES) &
-        (stock_df[available_qty_col] > 0) &
+        ((stock_df[available_qty_col] > 0) | (stock_df[git_qty_col] > 0)) &
         (stock_df[fsn_col] != "")
     ]
 
@@ -859,18 +887,23 @@ def standardize_stock_file(stock_df, show_messages=False):
         site_col: "RR Warehouse",
         item_code_col: "SAP Code",
         available_qty_col: "Stock",
-    })[["FSN", "RR Warehouse", "SAP Code", "Stock"]]
+        git_qty_col: "GIT Stock",
+    })[["FSN", "RR Warehouse", "SAP Code", "Stock", "GIT Stock"]]
 
     standardized_df = standardized_df.groupby(
         ["FSN", "RR Warehouse", "SAP Code"],
         as_index=False
-    )["Stock"].sum()
+    ).agg({
+        "Stock": "sum",
+        "GIT Stock": "sum",
+    })
 
     if show_messages:
         st.info(
             "System stock file detected. "
             f"Filtered {original_rows:,} rows to {len(standardized_df):,} usable stock rows "
-            "using CustomLocation FGI/ECOM and allowed SITE list."
+            "using CustomLocation FGI/ECOM and allowed SITE list. "
+            "Available Qty is physical stock and InTransit Stock is GIT stock."
         )
 
     return standardized_df
@@ -1002,14 +1035,45 @@ def get_open_allocation_qty():
 
     if "billed_qty" in tracker_columns:
         query = """
+        WITH tracker_balance AS (
+            SELECT
+                fsn,
+                rr_warehouse,
+                sap_code,
+                COALESCE(allocation_type, 'Physical Stock') AS allocation_type,
+                sent_for_billing,
+                GREATEST(allocated_qty - COALESCE(billed_qty, 0), 0) AS balance_qty
+            FROM allocation_tracker
+        )
         SELECT
             fsn,
             rr_warehouse,
             sap_code,
-            SUM(GREATEST(allocated_qty - COALESCE(billed_qty, 0), 0)) AS open_alloc_qty
-        FROM allocation_tracker
-        WHERE sent_for_billing='Yes'
-        AND GREATEST(allocated_qty - COALESCE(billed_qty, 0), 0) > 0
+            SUM(
+                CASE
+                    WHEN allocation_type = 'GIT Stock'
+                    THEN balance_qty
+                    ELSE 0
+                END
+            ) AS git_open_alloc_qty,
+            SUM(
+                CASE
+                    WHEN allocation_type <> 'GIT Stock'
+                    AND sent_for_billing = 'Yes'
+                    THEN balance_qty
+                    ELSE 0
+                END
+            ) AS physical_open_alloc_qty,
+            SUM(
+                CASE
+                    WHEN allocation_type = 'GIT Stock'
+                    OR sent_for_billing = 'Yes'
+                    THEN balance_qty
+                    ELSE 0
+                END
+            ) AS open_alloc_qty
+        FROM tracker_balance
+        WHERE balance_qty > 0
         GROUP BY fsn, rr_warehouse, sap_code
         """
 
@@ -1019,10 +1083,31 @@ def get_open_allocation_qty():
             fsn,
             rr_warehouse,
             sap_code,
-            SUM(allocated_qty) AS open_alloc_qty
+            SUM(
+                CASE
+                    WHEN COALESCE(allocation_type, 'Physical Stock') = 'GIT Stock'
+                    THEN allocated_qty
+                    ELSE 0
+                END
+            ) AS git_open_alloc_qty,
+            SUM(
+                CASE
+                    WHEN COALESCE(allocation_type, 'Physical Stock') <> 'GIT Stock'
+                    AND sent_for_billing = 'Yes'
+                    THEN allocated_qty
+                    ELSE 0
+                END
+            ) AS physical_open_alloc_qty,
+            SUM(
+                CASE
+                    WHEN COALESCE(allocation_type, 'Physical Stock') = 'GIT Stock'
+                    OR sent_for_billing = 'Yes'
+                    THEN allocated_qty
+                    ELSE 0
+                END
+            ) AS open_alloc_qty
         FROM allocation_tracker
-        WHERE sent_for_billing='Yes'
-        AND (billing_done IS NULL OR billing_done!='Yes')
+        WHERE billing_done IS NULL OR billing_done != 'Yes'
         GROUP BY fsn, rr_warehouse, sap_code
         """
 
@@ -1104,6 +1189,7 @@ def get_sent_for_billing_download_df(tracker_df):
         "fk_warehouse",
         "sap_code",
         "fcn",
+        "allocation_type",
         "pending_amount",
         "allocated_qty",
         "billed_qty",
@@ -1129,6 +1215,7 @@ def get_sent_for_billing_download_df(tracker_df):
         "fk_warehouse": "FK Warehouse",
         "sap_code": "SAP Code",
         "fcn": "FCN",
+        "allocation_type": "Allocation Type",
         "pending_amount": "Pending Amount",
         "allocated_qty": "Allocated Qty.",
         "billed_qty": "Billed Qty.",
@@ -1157,6 +1244,7 @@ def get_billing_update_template_df(tracker_df):
         "fk_warehouse",
         "sap_code",
         "fcn",
+        "allocation_type",
         "allocated_qty",
         "sent_for_billing",
         "sent_date",
@@ -1182,6 +1270,7 @@ def get_billing_update_template_df(tracker_df):
         "fk_warehouse": "FK Warehouse",
         "sap_code": "SAP Code",
         "fcn": "FCN",
+        "allocation_type": "Allocation Type",
         "allocated_qty": "Allocated Qty.",
         "sent_for_billing": "Sent For Billing (Yes/No)",
         "sent_date": "Sent Date (YYYY-MM-DD)",
@@ -1745,6 +1834,7 @@ def get_manual_allocation_template_df():
         "RR Warehouse": ["TSHYD01"],
         "FK Warehouse": ["hyderabad_medchal_01"],
         "SAP Code": ["SAP001"],
+        "Allocation Type": ["Physical Stock"],
         "Pending Amount": [0],
         "Allocated Qty.": [10],
         "Remark": ["Manual emergency allocation"],
@@ -1763,6 +1853,7 @@ def prepare_manual_allocation_upload(uploaded_df):
         "RR Warehouse": ["RR Warehouse", "Site", "Site Id"],
         "FK Warehouse": ["FK Warehouse", "FK FC"],
         "SAP Code": ["SAP Code", "Item Code", "Item"],
+        "Allocation Type": ["Allocation Type", "Stock Type"],
         "Pending Amount": ["Pending Amount", "Pending Amt"],
         "Allocated Qty.": ["Allocated Qty.", "Allocated Qty", "Qty"],
         "Remark": ["Remark", "Remarks"],
@@ -1782,11 +1873,11 @@ def prepare_manual_allocation_upload(uploaded_df):
     if missing_cols:
         return pd.DataFrame(), missing_cols
 
-    for col in ["Order ID", "Buyer Code", "Pending Amount", "Remark"]:
+    for col in ["Order ID", "Buyer Code", "Allocation Type", "Pending Amount", "Remark"]:
         if col not in manual_df.columns:
-            manual_df[col] = "" if col != "Pending Amount" else 0
+            manual_df[col] = 0 if col == "Pending Amount" else "Physical Stock" if col == "Allocation Type" else ""
 
-    for col in ["PO No.", "Order ID", "Buyer Code", "FSN", "Title", "RR Warehouse", "FK Warehouse", "SAP Code", "Remark"]:
+    for col in ["PO No.", "Order ID", "Buyer Code", "FSN", "Title", "RR Warehouse", "FK Warehouse", "SAP Code", "Allocation Type", "Remark"]:
         manual_df[col] = manual_df[col].apply(clean_text)
 
     manual_df["RR Warehouse"] = manual_df["RR Warehouse"].str.upper()
@@ -1808,6 +1899,7 @@ def prepare_manual_allocation_upload(uploaded_df):
             "RR Warehouse",
             "FK Warehouse",
             "SAP Code",
+            "Allocation Type",
             "Pending Amount",
             "Allocated Qty.",
             "Remark",
@@ -1830,6 +1922,7 @@ def save_manual_allocation_upload(manual_df):
             "rr_warehouse": row["RR Warehouse"],
             "fk_warehouse": row["FK Warehouse"],
             "sap_code": row["SAP Code"],
+            "allocation_type": row["Allocation Type"] or "Physical Stock",
             "pending_amount": clean_number(row["Pending Amount"]),
             "allocated_qty": clean_number(row["Allocated Qty."]),
             "sent_for_billing": "No",
@@ -1848,7 +1941,7 @@ def save_manual_allocation_upload(manual_df):
 
         optional_columns = [
             "order_id", "buyer_code", "pending_amount",
-            "billed_qty", "balance_to_bill", "billing_source"
+            "allocation_type", "billed_qty", "balance_to_bill", "billing_source"
         ]
 
         for col in optional_columns:
@@ -1937,6 +2030,7 @@ def get_tracker_correction_template_df(tracker_df):
         "fk_warehouse",
         "sap_code",
         "fcn",
+        "allocation_type",
         "pending_amount",
         "allocated_qty",
         "billed_qty",
@@ -1966,6 +2060,7 @@ def get_tracker_correction_template_df(tracker_df):
         "fk_warehouse": "FK Warehouse",
         "sap_code": "SAP Code",
         "fcn": "FCN",
+        "allocation_type": "Allocation Type",
         "pending_amount": "Pending Amount",
         "allocated_qty": "Allocated Qty.",
         "billed_qty": "Billed Qty.",
@@ -1997,6 +2092,9 @@ def get_tracker_correction_template_df(tracker_df):
     if "Remaining Qty." in new_row:
         new_row["Remaining Qty."] = 0
 
+    if "Allocation Type" in new_row:
+        new_row["Allocation Type"] = "Physical Stock"
+
     template_df = pd.concat(
         [pd.DataFrame([new_row]), template_df],
         ignore_index=True
@@ -2021,6 +2119,7 @@ def apply_tracker_correction_upload(uploaded_df):
         "FK Warehouse": ["FK Warehouse", "FK FC", "fk_warehouse"],
         "SAP Code": ["SAP Code", "Item Code", "sap_code"],
         "FCN": ["FCN", "fcn"],
+        "Allocation Type": ["Allocation Type", "Stock Type", "allocation_type"],
         "Pending Amount": ["Pending Amount", "Pending Amt", "pending_amount"],
         "Allocated Qty.": ["Allocated Qty.", "Allocated Qty", "allocated_qty"],
         "Billed Qty.": ["Billed Qty.", "Billed Qty", "Billing Qty", "billed_qty"],
@@ -2067,6 +2166,7 @@ def apply_tracker_correction_upload(uploaded_df):
         "fk_warehouse": "FK Warehouse",
         "sap_code": "SAP Code",
         "fcn": "FCN",
+        "allocation_type": "Allocation Type",
         "pending_amount": "Pending Amount",
         "allocated_qty": "Allocated Qty.",
         "billed_qty": "Billed Qty.",
@@ -2246,6 +2346,12 @@ def apply_tracker_correction_upload(uploaded_df):
                 if "billing_source" in tracker_columns:
                     new_values["billing_source"] = "Full Tracker Correction Upload"
                     insert_columns.append("billing_source")
+
+                if "allocation_type" in tracker_columns and clean_text(new_values.get("allocation_type", "")) == "":
+                    new_values["allocation_type"] = "Physical Stock"
+
+                    if "allocation_type" not in insert_columns:
+                        insert_columns.append("allocation_type")
 
                 if "remark" in tracker_columns and clean_text(new_values.get("remark", "")) == "":
                     new_values["remark"] = "Inserted by full tracker correction upload"
@@ -2891,7 +2997,11 @@ def run_allocation(pending_df, stock_df):
     for col in ["FSN", "RR Warehouse", "SAP Code"]:
         stock_df[col] = stock_df[col].apply(clean_text)
 
+    if "GIT Stock" not in stock_df.columns:
+        stock_df["GIT Stock"] = 0
+
     stock_df["Stock"] = stock_df["Stock"].apply(clean_number)
+    stock_df["GIT Stock"] = stock_df["GIT Stock"].apply(clean_number)
 
     open_alloc = get_open_allocation_qty()
 
@@ -2899,6 +3009,8 @@ def run_allocation(pending_df, stock_df):
         open_alloc["fsn"] = open_alloc["fsn"].apply(clean_text)
         open_alloc["rr_warehouse"] = open_alloc["rr_warehouse"].apply(clean_text)
         open_alloc["sap_code"] = open_alloc["sap_code"].apply(clean_text)
+        open_alloc["physical_open_alloc_qty"] = open_alloc.get("physical_open_alloc_qty", 0)
+        open_alloc["git_open_alloc_qty"] = open_alloc.get("git_open_alloc_qty", 0)
 
         stock_df = stock_df.merge(
             open_alloc,
@@ -2907,13 +3019,25 @@ def run_allocation(pending_df, stock_df):
             right_on=["fsn", "rr_warehouse", "sap_code"]
         )
 
+        stock_df["physical_open_alloc_qty"] = stock_df["physical_open_alloc_qty"].fillna(0)
+        stock_df["git_open_alloc_qty"] = stock_df["git_open_alloc_qty"].fillna(0)
         stock_df["open_alloc_qty"] = stock_df["open_alloc_qty"].fillna(0)
 
     else:
         stock_df["open_alloc_qty"] = 0
+        stock_df["physical_open_alloc_qty"] = 0
+        stock_df["git_open_alloc_qty"] = 0
 
-    stock_df["usable_stock"] = stock_df["Stock"] - stock_df["open_alloc_qty"]
+    stock_df["git_blocked_from_physical_qty"] = (
+        stock_df["git_open_alloc_qty"] - stock_df["GIT Stock"]
+    ).apply(lambda x: max(x, 0))
+    stock_df["physical_block_qty"] = (
+        stock_df["physical_open_alloc_qty"] + stock_df["git_blocked_from_physical_qty"]
+    )
+    stock_df["usable_stock"] = stock_df["Stock"] - stock_df["physical_block_qty"]
     stock_df["usable_stock"] = stock_df["usable_stock"].apply(lambda x: max(x, 0))
+    stock_df["usable_git_stock"] = stock_df["GIT Stock"] - stock_df["git_open_alloc_qty"]
+    stock_df["usable_git_stock"] = stock_df["usable_git_stock"].apply(lambda x: max(x, 0))
 
     for _, p in pending_df.iterrows():
         po = clean_text(p["PO No."])
@@ -2948,6 +3072,7 @@ def run_allocation(pending_df, stock_df):
                 "Pending Amount": 0,
                 "Allocated Qty.": 0,
                 "Balance Pending Qty.": 0,
+                "Allocation Type": "",
                 "Current Stock": 0,
                 "Open Allocation Qty": 0,
                 "Usable Stock Before": 0,
@@ -2962,43 +3087,76 @@ def run_allocation(pending_df, stock_df):
             (stock_df["usable_stock"] > 0)
         ]
 
-        for idx, s in matching.iterrows():
+        matching_git = stock_df[
+            (stock_df["FSN"] == fsn) &
+            (stock_df["RR Warehouse"] == rr) &
+            (stock_df["usable_git_stock"] > 0)
+        ]
+
+        allocation_passes = [
+            {
+                "rows": matching,
+                "usable_col": "usable_stock",
+                "stock_col": "Stock",
+                "open_col": "physical_block_qty",
+                "allocation_type": "Physical Stock",
+                "status": "Allocated",
+            },
+            {
+                "rows": matching_git,
+                "usable_col": "usable_git_stock",
+                "stock_col": "GIT Stock",
+                "open_col": "git_open_alloc_qty",
+                "allocation_type": "GIT Stock",
+                "status": "GIT Allocated",
+            },
+        ]
+
+        for allocation_pass in allocation_passes:
+            for idx, s in allocation_pass["rows"].iterrows():
+                if remaining <= 0:
+                    break
+
+                usable_col = allocation_pass["usable_col"]
+                stock_col = allocation_pass["stock_col"]
+                open_col = allocation_pass["open_col"]
+                usable = clean_number(stock_df.loc[idx, usable_col])
+                alloc = min(usable, remaining)
+
+                if alloc > 0:
+                    row_pending_qty = pending_qty if not pending_shown_for_demand else 0
+                    row_pending_amount = pending_qty * pending_unit_amount if not pending_shown_for_demand else 0
+
+                    allocated_anything = True
+                    pending_shown_for_demand = True
+                    stock_df.loc[idx, usable_col] = usable - alloc
+                    remaining -= alloc
+
+                    allocation_row_indexes.append(len(result))
+
+                    result.append({
+                        "PO No.": po,
+                        "Order ID": order_id,
+                        "Buyer Code": buyer_code,
+                        "FSN": fsn,
+                        "Title": title,
+                        "RR Warehouse": rr,
+                        "FK Warehouse": fk,
+                        "SAP Code": s["SAP Code"],
+                        "Pending Qty.": row_pending_qty,
+                        "Pending Amount": row_pending_amount,
+                        "Allocated Qty.": alloc,
+                        "Balance Pending Qty.": 0,
+                        "Allocation Type": allocation_pass["allocation_type"],
+                        "Current Stock": s[stock_col],
+                        "Open Allocation Qty": s[open_col],
+                        "Usable Stock Before": usable,
+                        "Usable Stock After": usable - alloc,
+                        "Status": allocation_pass["status"]
+                    })
+
             if remaining <= 0:
                 break
-
-            usable = clean_number(stock_df.loc[idx, "usable_stock"])
-            alloc = min(usable, remaining)
-
-            if alloc > 0:
-                row_pending_qty = pending_qty if not pending_shown_for_demand else 0
-                row_pending_amount = pending_qty * pending_unit_amount if not pending_shown_for_demand else 0
-
-                allocated_anything = True
-                pending_shown_for_demand = True
-                stock_df.loc[idx, "usable_stock"] = usable - alloc
-                remaining -= alloc
-
-                allocation_row_indexes.append(len(result))
-
-                result.append({
-                    "PO No.": po,
-                    "Order ID": order_id,
-                    "Buyer Code": buyer_code,
-                    "FSN": fsn,
-                    "Title": title,
-                    "RR Warehouse": rr,
-                    "FK Warehouse": fk,
-                    "SAP Code": s["SAP Code"],
-                    "Pending Qty.": row_pending_qty,
-                    "Pending Amount": row_pending_amount,
-                    "Allocated Qty.": alloc,
-                    "Balance Pending Qty.": 0,
-                    "Current Stock": s["Stock"],
-                    "Open Allocation Qty": s["open_alloc_qty"],
-                    "Usable Stock Before": usable,
-                    "Usable Stock After": usable - alloc,
-                    "Status": "Allocated"
-                })
 
         if allocation_row_indexes:
             result[allocation_row_indexes[-1]]["Balance Pending Qty."] = remaining
@@ -3017,6 +3175,7 @@ def run_allocation(pending_df, stock_df):
                 "Pending Amount": pending_qty * pending_unit_amount,
                 "Allocated Qty.": 0,
                 "Balance Pending Qty.": remaining,
+                "Allocation Type": "",
                 "Current Stock": 0,
                 "Open Allocation Qty": 0,
                 "Usable Stock Before": 0,
@@ -3040,6 +3199,7 @@ def save_allocation(df):
     has_billed_qty = "billed_qty" in tracker_columns
     has_balance_to_bill = "balance_to_bill" in tracker_columns
     has_billing_source = "billing_source" in tracker_columns
+    has_allocation_type = "allocation_type" in tracker_columns
 
     for _, r in df.iterrows():
         if clean_number(r["Allocated Qty."]) <= 0:
@@ -3084,7 +3244,7 @@ def save_allocation(df):
             "allocated_qty": clean_number(r["Allocated Qty."]),
             "sent_for_billing": "No",
             "billing_done": "No",
-            "remark": "Fresh Allocation"
+            "remark": "Fresh GIT Allocation" if r.get("Allocation Type", "") == "GIT Stock" else "Fresh Allocation"
         }
 
         if has_order_id:
@@ -3122,6 +3282,11 @@ def save_allocation(df):
             insert_columns.insert(-1, "billing_source")
             value_keys.insert(-1, ":billing_source")
             params["billing_source"] = "Allocation"
+
+        if has_allocation_type:
+            insert_columns.insert(-1, "allocation_type")
+            value_keys.insert(-1, ":allocation_type")
+            params["allocation_type"] = r.get("Allocation Type", "Physical Stock") or "Physical Stock"
 
         db_execute(f"""
         INSERT INTO allocation_tracker (
@@ -3351,12 +3516,13 @@ elif menu == "Upload & Allocate":
             "FSN": ["FSN001"],
             "RR Warehouse": ["WH1"],
             "SAP Code": ["SAP001"],
-            "Stock": [200]
+            "Stock": [200],
+            "GIT Stock": [50]
         })
         st.dataframe(stock_sample, use_container_width=True)
         st.caption(
             "System stock files are also accepted. The app maps Item Code to SAP Code, "
-            "Available Qty to Stock, Site to RR Warehouse, and filters CustomLocation "
+            "Available Qty to Stock, InTransit Stock to GIT Stock, Site to RR Warehouse, and filters CustomLocation "
             "to FGI/ECOM plus the approved SITE list."
         )
 
@@ -3859,6 +4025,7 @@ elif menu == "Allocation Tracker":
                 "fk_warehouse",
                 "sap_code",
                 "fcn",
+                "allocation_type",
                 "pending_amount",
                 "allocated_qty",
                 "billed_qty",
@@ -4006,6 +4173,7 @@ elif menu == "Allocation Tracker":
                     "fk_warehouse": st.column_config.TextColumn("FK Warehouse", disabled=True),
                     "sap_code": st.column_config.TextColumn("SAP Code", disabled=True),
                     "fcn": st.column_config.TextColumn("FCN", disabled=True),
+                    "allocation_type": st.column_config.TextColumn("Allocation Type", disabled=True),
                     "pending_amount": st.column_config.NumberColumn("Pending Amount", disabled=True),
                     "allocated_qty": st.column_config.NumberColumn("Allocated Qty.", disabled=True),
                     "billed_qty": st.column_config.NumberColumn("Billed Qty."),
