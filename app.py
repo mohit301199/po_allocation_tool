@@ -400,7 +400,10 @@ def ensure_performance_indexes():
     ]
 
     for query in index_queries:
-        db_execute(query, clear_cache=False)
+        try:
+            db_execute(query, clear_cache=False)
+        except Exception:
+            continue
 
 
 if "performance_indexes_checked" not in st.session_state:
@@ -447,27 +450,62 @@ def hash_remember_token(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def ensure_remembered_login_storage():
+    setup_queries = [
+        """
+        CREATE TABLE IF NOT EXISTS remembered_logins (
+            token_hash TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            expires_at TIMESTAMP NOT NULL,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_remembered_logins_username
+        ON remembered_logins (username)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_remembered_logins_expires_at
+        ON remembered_logins (expires_at)
+        """,
+    ]
+
+    try:
+        for query in setup_queries:
+            db_execute(query, clear_cache=False)
+        return True
+    except Exception:
+        return False
+
+
 def create_remember_login(username):
+    if not ensure_remembered_login_storage():
+        return
+
     token = token_secrets.token_urlsafe(48)
     token_hash = hash_remember_token(token)
     expires_at = datetime.now() + timedelta(days=REMEMBER_LOGIN_DAYS)
 
-    db_execute("""
-        DELETE FROM remembered_logins
-        WHERE username = :username
-        OR expires_at <= NOW()
-    """, {
-        "username": username
-    }, clear_cache=False)
+    try:
+        db_execute("""
+            DELETE FROM remembered_logins
+            WHERE username = :username
+            OR expires_at <= NOW()
+        """, {
+            "username": username
+        }, clear_cache=False)
 
-    db_execute("""
-        INSERT INTO remembered_logins (token_hash, username, expires_at)
-        VALUES (:token_hash, :username, :expires_at)
-    """, {
-        "token_hash": token_hash,
-        "username": username,
-        "expires_at": expires_at,
-    }, clear_cache=False)
+        db_execute("""
+            INSERT INTO remembered_logins (token_hash, username, expires_at)
+            VALUES (:token_hash, :username, :expires_at)
+        """, {
+            "token_hash": token_hash,
+            "username": username,
+            "expires_at": expires_at,
+        }, clear_cache=False)
+
+    except Exception:
+        return
 
     cookie_manager.set(
         REMEMBER_COOKIE_NAME,
@@ -481,12 +519,15 @@ def clear_remember_login():
     token = cookie_manager.get(REMEMBER_COOKIE_NAME)
 
     if token:
-        db_execute("""
-            DELETE FROM remembered_logins
-            WHERE token_hash = :token_hash
-        """, {
-            "token_hash": hash_remember_token(token)
-        }, clear_cache=False)
+        try:
+            db_execute("""
+                DELETE FROM remembered_logins
+                WHERE token_hash = :token_hash
+            """, {
+                "token_hash": hash_remember_token(token)
+            }, clear_cache=False)
+        except Exception:
+            pass
 
     cookie_manager.delete(REMEMBER_COOKIE_NAME)
 
@@ -500,18 +541,26 @@ def try_remembered_login():
     if not token:
         return
 
-    remembered_user = db_read("""
-        SELECT u.username, u.role
-        FROM remembered_logins r
-        JOIN app_users u
-        ON u.username = r.username
-        WHERE r.token_hash = :token_hash
-        AND r.expires_at > NOW()
-        AND u.active = TRUE
-        LIMIT 1
-    """, {
-        "token_hash": hash_remember_token(token)
-    }, use_cache=False)
+    if not ensure_remembered_login_storage():
+        cookie_manager.delete(REMEMBER_COOKIE_NAME)
+        return
+
+    try:
+        remembered_user = db_read("""
+            SELECT u.username, u.role
+            FROM remembered_logins r
+            JOIN app_users u
+            ON u.username = r.username
+            WHERE r.token_hash = :token_hash
+            AND r.expires_at > NOW()
+            AND u.active = TRUE
+            LIMIT 1
+        """, {
+            "token_hash": hash_remember_token(token)
+        }, use_cache=False)
+    except Exception:
+        cookie_manager.delete(REMEMBER_COOKIE_NAME)
+        return
 
     if remembered_user.empty:
         clear_remember_login()
