@@ -6,7 +6,6 @@ import hashlib
 import secrets as token_secrets
 from datetime import datetime, timedelta
 from io import BytesIO
-import extra_streamlit_components as stx
 
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as XLImage
@@ -25,7 +24,7 @@ import tempfile
 import os
 
 
-REMEMBER_COOKIE_NAME = "po_allocation_remember_token"
+REMEMBER_QUERY_PARAM = "remember_token"
 REMEMBER_LOGIN_DAYS = 30
 
 
@@ -228,9 +227,6 @@ button[data-baseweb="tab"][aria-selected="true"] * {
 }
 </style>
 """, unsafe_allow_html=True)
-
-
-cookie_manager = stx.CookieManager(key="po_allocation_cookie_manager")
 
 
 def render_page_header(title, subtitle):
@@ -450,6 +446,27 @@ def hash_remember_token(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def get_remember_token_from_url():
+    token = st.query_params.get(REMEMBER_QUERY_PARAM, "")
+
+    if isinstance(token, list):
+        token = token[0] if token else ""
+
+    return clean_text(token)
+
+
+def set_remember_token_in_url(token):
+    st.query_params[REMEMBER_QUERY_PARAM] = token
+
+
+def clear_remember_token_from_url():
+    try:
+        if REMEMBER_QUERY_PARAM in st.query_params:
+            del st.query_params[REMEMBER_QUERY_PARAM]
+    except Exception:
+        pass
+
+
 def ensure_remembered_login_storage():
     setup_queries = [
         """
@@ -507,16 +524,11 @@ def create_remember_login(username):
     except Exception:
         return
 
-    cookie_manager.set(
-        REMEMBER_COOKIE_NAME,
-        token,
-        expires_at=expires_at,
-        same_site="strict"
-    )
+    set_remember_token_in_url(token)
 
 
 def clear_remember_login():
-    token = cookie_manager.get(REMEMBER_COOKIE_NAME)
+    token = get_remember_token_from_url()
 
     if token:
         try:
@@ -529,20 +541,20 @@ def clear_remember_login():
         except Exception:
             pass
 
-    cookie_manager.delete(REMEMBER_COOKIE_NAME)
+    clear_remember_token_from_url()
 
 
 def try_remembered_login():
     if st.session_state.get("logged_in", False):
         return
 
-    token = cookie_manager.get(REMEMBER_COOKIE_NAME)
+    token = get_remember_token_from_url()
 
     if not token:
         return
 
     if not ensure_remembered_login_storage():
-        cookie_manager.delete(REMEMBER_COOKIE_NAME)
+        clear_remember_token_from_url()
         return
 
     try:
@@ -559,7 +571,7 @@ def try_remembered_login():
             "token_hash": hash_remember_token(token)
         }, use_cache=False)
     except Exception:
-        cookie_manager.delete(REMEMBER_COOKIE_NAME)
+        clear_remember_token_from_url()
         return
 
     if remembered_user.empty:
