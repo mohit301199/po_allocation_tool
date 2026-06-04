@@ -342,6 +342,26 @@ def ensure_performance_indexes():
         ADD COLUMN IF NOT EXISTS allocation_type TEXT DEFAULT 'Physical Stock'
         """,
         """
+        ALTER TABLE allocation_tracker
+        ADD COLUMN IF NOT EXISTS appointment_no TEXT
+        """,
+        """
+        ALTER TABLE allocation_tracker
+        ADD COLUMN IF NOT EXISTS appointment_date TEXT
+        """,
+        """
+        ALTER TABLE allocation_tracker
+        ADD COLUMN IF NOT EXISTS appointment_status TEXT
+        """,
+        """
+        ALTER TABLE allocation_tracker
+        ADD COLUMN IF NOT EXISTS appointment_covered_qty REAL DEFAULT 0
+        """,
+        """
+        ALTER TABLE allocation_tracker
+        ADD COLUMN IF NOT EXISTS appointment_required_qty REAL DEFAULT 0
+        """,
+        """
         CREATE INDEX IF NOT EXISTS idx_allocation_tracker_sent_billing
         ON allocation_tracker (sent_for_billing, billing_done)
         """,
@@ -352,6 +372,10 @@ def ensure_performance_indexes():
         """
         CREATE INDEX IF NOT EXISTS idx_allocation_tracker_stock_type
         ON allocation_tracker (allocation_type, billing_done)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_allocation_tracker_appointment
+        ON allocation_tracker (appointment_no, fsn, fk_warehouse, po_no)
         """,
         """
         CREATE INDEX IF NOT EXISTS idx_allocation_tracker_po_fsn_rr_fk
@@ -384,6 +408,23 @@ def ensure_performance_indexes():
         """
         CREATE INDEX IF NOT EXISTS idx_allocation_tracker_id
         ON allocation_tracker (id)
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS appointment_tracker (
+            id SERIAL PRIMARY KEY,
+            upload_date TEXT,
+            appointment_no TEXT,
+            appointment_date TEXT,
+            po_no TEXT,
+            fsn TEXT,
+            fk_warehouse TEXT,
+            appointment_qty REAL,
+            remark TEXT
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_appointment_tracker_match
+        ON appointment_tracker (fsn, fk_warehouse, po_no, appointment_date)
         """,
         """
         CREATE TABLE IF NOT EXISTS remembered_logins (
@@ -1134,6 +1175,289 @@ def get_existing_po_allocation_qty():
     return db_read(query)
 
 
+def format_upload_date(value):
+    if pd.isna(value) or clean_text(value) == "":
+        return ""
+
+    parsed_date = pd.to_datetime(value, errors="coerce", dayfirst=False)
+
+    if pd.isna(parsed_date):
+        parsed_date = pd.to_datetime(value, errors="coerce", dayfirst=True)
+
+    if pd.isna(parsed_date):
+        return ""
+
+    return parsed_date.strftime("%Y-%m-%d")
+
+
+def prepare_appointment_upload(uploaded_df):
+    appointment_df = normalize_columns(uploaded_df)
+
+    aliases = {
+        "Appointment No.": ["Appointment No.", "Appointment No", "Appointment Number", "FCN", "FCN No"],
+        "Appointment Date": ["Appointment Date", "Delivery Date", "Appointment Date (YYYY-MM-DD)"],
+        "PO No.": ["PO No.", "PO No", "PONo", "PO"],
+        "FSN": ["FSN", "fsn"],
+        "FK Warehouse": ["FK Warehouse", "FK FC", "fk_warehouse"],
+        "Appointment Qty.": ["Appointment Qty.", "Appointment Qty", "Qty", "Quantity", "Appointment Quantity"],
+        "Remark": ["Remark", "Remarks"],
+    }
+
+    rename_map = {}
+
+    for target_col, options in aliases.items():
+        found_col = first_existing_column(appointment_df, options)
+        if found_col:
+            rename_map[found_col] = target_col
+
+    appointment_df = appointment_df.rename(columns=rename_map)
+    required_cols = ["Appointment No.", "Appointment Date", "FSN", "FK Warehouse", "Appointment Qty."]
+    missing_cols = [col for col in required_cols if col not in appointment_df.columns]
+
+    if missing_cols:
+        return pd.DataFrame(), missing_cols
+
+    for col in ["PO No.", "Remark"]:
+        if col not in appointment_df.columns:
+            appointment_df[col] = ""
+
+    for col in ["Appointment No.", "PO No.", "FSN", "FK Warehouse", "Remark"]:
+        appointment_df[col] = appointment_df[col].apply(clean_text)
+
+    appointment_df["Appointment Date"] = appointment_df["Appointment Date"].apply(format_upload_date)
+    appointment_df["Appointment Qty."] = appointment_df["Appointment Qty."].apply(clean_number)
+    appointment_df["FSN"] = appointment_df["FSN"].str.upper()
+
+    appointment_df = appointment_df[
+        (appointment_df["Appointment No."] != "") &
+        (appointment_df["Appointment Date"] != "") &
+        (appointment_df["FSN"] != "") &
+        (appointment_df["FK Warehouse"] != "") &
+        (appointment_df["Appointment Qty."] > 0)
+    ]
+
+    return appointment_df[
+        [
+            "Appointment No.",
+            "Appointment Date",
+            "PO No.",
+            "FSN",
+            "FK Warehouse",
+            "Appointment Qty.",
+            "Remark",
+        ]
+    ], []
+
+
+def save_appointment_upload(appointment_df):
+    saved_count = 0
+
+    for _, row in appointment_df.iterrows():
+        params = {
+            "upload_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "appointment_no": row["Appointment No."],
+            "appointment_date": row["Appointment Date"],
+            "po_no": row["PO No."],
+            "fsn": row["FSN"],
+            "fk_warehouse": row["FK Warehouse"],
+            "appointment_qty": clean_number(row["Appointment Qty."]),
+            "remark": row["Remark"],
+        }
+
+        db_execute("""
+        DELETE FROM appointment_tracker
+        WHERE appointment_no = :appointment_no
+        AND fsn = :fsn
+        AND COALESCE(fk_warehouse, '') = COALESCE(:fk_warehouse, '')
+        AND COALESCE(po_no, '') = COALESCE(:po_no, '')
+        """, params, clear_cache=False)
+
+        db_execute("""
+        INSERT INTO appointment_tracker (
+            upload_date,
+            appointment_no,
+            appointment_date,
+            po_no,
+            fsn,
+            fk_warehouse,
+            appointment_qty,
+            remark
+        )
+        VALUES (
+            :upload_date,
+            :appointment_no,
+            :appointment_date,
+            :po_no,
+            :fsn,
+            :fk_warehouse,
+            :appointment_qty,
+            :remark
+        )
+        """, params, clear_cache=False)
+
+        saved_count += 1
+
+    if saved_count > 0:
+        st.cache_data.clear()
+
+    return saved_count
+
+
+def get_appointment_balance_df():
+    tracker_columns = get_allocation_tracker_columns()
+    covered_expr = (
+        "COALESCE(SUM(appointment_covered_qty), 0)"
+        if "appointment_covered_qty" in tracker_columns
+        else "0"
+    )
+
+    try:
+        appointment_df = db_read(f"""
+        SELECT
+            a.*,
+            GREATEST(a.appointment_qty - COALESCE(used.used_qty, 0), 0) AS appointment_balance_qty
+        FROM appointment_tracker a
+        LEFT JOIN (
+            SELECT
+                appointment_no,
+                fsn,
+                fk_warehouse,
+                po_no,
+                {covered_expr} AS used_qty
+            FROM allocation_tracker
+            WHERE appointment_no IS NOT NULL
+            AND TRIM(appointment_no) <> ''
+            GROUP BY appointment_no, fsn, fk_warehouse, po_no
+        ) used
+        ON COALESCE(a.appointment_no, '') = COALESCE(used.appointment_no, '')
+        AND COALESCE(a.fsn, '') = COALESCE(used.fsn, '')
+        AND COALESCE(a.fk_warehouse, '') = COALESCE(used.fk_warehouse, '')
+        AND COALESCE(a.po_no, '') = COALESCE(used.po_no, '')
+        WHERE GREATEST(a.appointment_qty - COALESCE(used.used_qty, 0), 0) > 0
+        ORDER BY a.appointment_date, a.id
+        """, use_cache=False)
+    except Exception:
+        return pd.DataFrame()
+
+    for col in ["appointment_no", "po_no", "fsn", "fk_warehouse", "appointment_date"]:
+        if col not in appointment_df.columns:
+            appointment_df[col] = ""
+        appointment_df[col] = appointment_df[col].apply(clean_text)
+
+    appointment_df["appointment_balance_qty"] = appointment_df["appointment_balance_qty"].apply(clean_number)
+
+    return appointment_df
+
+
+def get_matching_appointments(appointment_df, po, fsn, fk):
+    if appointment_df.empty:
+        return pd.DataFrame()
+
+    return appointment_df[
+        (appointment_df["fsn"] == fsn) &
+        (appointment_df["fk_warehouse"] == fk) &
+        ((appointment_df["po_no"] == "") | (appointment_df["po_no"] == po)) &
+        (appointment_df["appointment_balance_qty"] > 0)
+    ].copy()
+
+
+def append_appointment_row(rows, base_row, qty, pending_qty, pending_amount, balance_pending_qty, status, appointment=None):
+    row = base_row.copy()
+    row["Allocated Qty."] = qty
+    row["Pending Qty."] = pending_qty
+    row["Pending Amount"] = pending_amount
+    row["Balance Pending Qty."] = balance_pending_qty
+
+    if appointment is not None:
+        row["Appointment No."] = clean_text(appointment["appointment_no"])
+        row["Appointment Date"] = clean_text(appointment["appointment_date"])
+        row["Appointment Status"] = "Appointment Covered"
+        row["Appointment Covered Qty"] = qty
+        row["Appointment Required Qty"] = 0
+        row["Status"] = f"{base_row['Status']} - Appointment Covered"
+    else:
+        row["Appointment No."] = ""
+        row["Appointment Date"] = ""
+        row["Appointment Status"] = "Appointment Required" if qty > 0 else ""
+        row["Appointment Covered Qty"] = 0
+        row["Appointment Required Qty"] = qty
+        row["Status"] = status
+
+    rows.append(row)
+
+
+def apply_appointments_to_allocation(allocation_df):
+    if allocation_df.empty:
+        return allocation_df
+
+    appointment_df = get_appointment_balance_df()
+    output_rows = []
+
+    for _, row in allocation_df.iterrows():
+        allocated_qty = clean_number(row.get("Allocated Qty.", 0))
+
+        if allocated_qty <= 0:
+            row = row.copy()
+            row["Appointment No."] = ""
+            row["Appointment Date"] = ""
+            row["Appointment Status"] = ""
+            row["Appointment Covered Qty"] = 0
+            row["Appointment Required Qty"] = 0
+            output_rows.append(row)
+            continue
+
+        po = clean_text(row.get("PO No.", ""))
+        fsn = clean_text(row.get("FSN", ""))
+        fk = clean_text(row.get("FK Warehouse", ""))
+        remaining_alloc = allocated_qty
+        pending_qty_to_show = clean_number(row.get("Pending Qty.", 0))
+        pending_amount_to_show = clean_number(row.get("Pending Amount", 0))
+        balance_pending_to_show = clean_number(row.get("Balance Pending Qty.", 0))
+        matches = get_matching_appointments(appointment_df, po, fsn, fk)
+        output_start_index = len(output_rows)
+
+        for appt_idx, appt in matches.iterrows():
+            if remaining_alloc <= 0:
+                break
+
+            appointment_balance = clean_number(appointment_df.loc[appt_idx, "appointment_balance_qty"])
+
+            if appointment_balance <= 0:
+                continue
+
+            covered_qty = min(remaining_alloc, appointment_balance)
+            append_appointment_row(
+                output_rows,
+                row,
+                covered_qty,
+                pending_qty_to_show,
+                pending_amount_to_show,
+                0,
+                row["Status"],
+                appt
+            )
+
+            appointment_df.loc[appt_idx, "appointment_balance_qty"] = appointment_balance - covered_qty
+            remaining_alloc -= covered_qty
+            pending_qty_to_show = 0
+            pending_amount_to_show = 0
+
+        if remaining_alloc > 0:
+            append_appointment_row(
+                output_rows,
+                row,
+                remaining_alloc,
+                pending_qty_to_show,
+                pending_amount_to_show,
+                balance_pending_to_show,
+                f"{row['Status']} - Appointment Required"
+            )
+        elif balance_pending_to_show > 0 and len(output_rows) > output_start_index:
+            output_rows[-1]["Balance Pending Qty."] = balance_pending_to_show
+
+    return pd.DataFrame(output_rows)
+
+
 # =========================
 # BILLING SUMMARY
 # =========================
@@ -1195,6 +1519,11 @@ def get_sent_for_billing_download_df(tracker_df):
         "sap_code",
         "fcn",
         "allocation_type",
+        "appointment_no",
+        "appointment_date",
+        "appointment_status",
+        "appointment_covered_qty",
+        "appointment_required_qty",
         "pending_amount",
         "allocated_qty",
         "billed_qty",
@@ -1221,6 +1550,11 @@ def get_sent_for_billing_download_df(tracker_df):
         "sap_code": "SAP Code",
         "fcn": "FCN",
         "allocation_type": "Allocation Type",
+        "appointment_no": "Appointment No.",
+        "appointment_date": "Appointment Date",
+        "appointment_status": "Appointment Status",
+        "appointment_covered_qty": "Appointment Covered Qty",
+        "appointment_required_qty": "Appointment Required Qty",
         "pending_amount": "Pending Amount",
         "allocated_qty": "Allocated Qty.",
         "billed_qty": "Billed Qty.",
@@ -1250,6 +1584,11 @@ def get_billing_update_template_df(tracker_df):
         "sap_code",
         "fcn",
         "allocation_type",
+        "appointment_no",
+        "appointment_date",
+        "appointment_status",
+        "appointment_covered_qty",
+        "appointment_required_qty",
         "allocated_qty",
         "sent_for_billing",
         "sent_date",
@@ -1276,6 +1615,11 @@ def get_billing_update_template_df(tracker_df):
         "sap_code": "SAP Code",
         "fcn": "FCN",
         "allocation_type": "Allocation Type",
+        "appointment_no": "Appointment No.",
+        "appointment_date": "Appointment Date",
+        "appointment_status": "Appointment Status",
+        "appointment_covered_qty": "Appointment Covered Qty",
+        "appointment_required_qty": "Appointment Required Qty",
         "allocated_qty": "Allocated Qty.",
         "sent_for_billing": "Sent For Billing (Yes/No)",
         "sent_date": "Sent Date (YYYY-MM-DD)",
@@ -1287,7 +1631,7 @@ def get_billing_update_template_df(tracker_df):
         "remark": "Remark",
     })
 
-    for col in ["Sent Date (YYYY-MM-DD)", "Billing Date (YYYY-MM-DD)"]:
+    for col in ["Appointment Date", "Sent Date (YYYY-MM-DD)", "Billing Date (YYYY-MM-DD)"]:
         if col in template_df.columns:
             template_df[col] = pd.to_datetime(
                 template_df[col],
@@ -2036,6 +2380,11 @@ def get_tracker_correction_template_df(tracker_df):
         "sap_code",
         "fcn",
         "allocation_type",
+        "appointment_no",
+        "appointment_date",
+        "appointment_status",
+        "appointment_covered_qty",
+        "appointment_required_qty",
         "pending_amount",
         "allocated_qty",
         "billed_qty",
@@ -2066,6 +2415,11 @@ def get_tracker_correction_template_df(tracker_df):
         "sap_code": "SAP Code",
         "fcn": "FCN",
         "allocation_type": "Allocation Type",
+        "appointment_no": "Appointment No.",
+        "appointment_date": "Appointment Date",
+        "appointment_status": "Appointment Status",
+        "appointment_covered_qty": "Appointment Covered Qty",
+        "appointment_required_qty": "Appointment Required Qty",
         "pending_amount": "Pending Amount",
         "allocated_qty": "Allocated Qty.",
         "billed_qty": "Billed Qty.",
@@ -2078,7 +2432,7 @@ def get_tracker_correction_template_df(tracker_df):
         "remark": "Remark",
     })
 
-    for col in ["Allocation Date", "Sent Date (YYYY-MM-DD)", "Billing Date (YYYY-MM-DD)"]:
+    for col in ["Allocation Date", "Appointment Date", "Sent Date (YYYY-MM-DD)", "Billing Date (YYYY-MM-DD)"]:
         if col in template_df.columns:
             template_df[col] = pd.to_datetime(
                 template_df[col],
@@ -2125,6 +2479,11 @@ def apply_tracker_correction_upload(uploaded_df):
         "SAP Code": ["SAP Code", "Item Code", "sap_code"],
         "FCN": ["FCN", "fcn"],
         "Allocation Type": ["Allocation Type", "Stock Type", "allocation_type"],
+        "Appointment No.": ["Appointment No.", "Appointment No", "appointment_no"],
+        "Appointment Date": ["Appointment Date", "appointment_date"],
+        "Appointment Status": ["Appointment Status", "appointment_status"],
+        "Appointment Covered Qty": ["Appointment Covered Qty", "Appointment Covered Qty.", "appointment_covered_qty"],
+        "Appointment Required Qty": ["Appointment Required Qty", "Appointment Required Qty.", "appointment_required_qty"],
         "Pending Amount": ["Pending Amount", "Pending Amt", "pending_amount"],
         "Allocated Qty.": ["Allocated Qty.", "Allocated Qty", "allocated_qty"],
         "Billed Qty.": ["Billed Qty.", "Billed Qty", "Billing Qty", "billed_qty"],
@@ -2172,6 +2531,11 @@ def apply_tracker_correction_upload(uploaded_df):
         "sap_code": "SAP Code",
         "fcn": "FCN",
         "allocation_type": "Allocation Type",
+        "appointment_no": "Appointment No.",
+        "appointment_date": "Appointment Date",
+        "appointment_status": "Appointment Status",
+        "appointment_covered_qty": "Appointment Covered Qty",
+        "appointment_required_qty": "Appointment Required Qty",
         "pending_amount": "Pending Amount",
         "allocated_qty": "Allocated Qty.",
         "billed_qty": "Billed Qty.",
@@ -2184,8 +2548,8 @@ def apply_tracker_correction_upload(uploaded_df):
         "remark": "Remark",
     }
 
-    numeric_columns = {"pending_amount", "allocated_qty", "billed_qty", "balance_to_bill"}
-    date_columns = {"allocation_date", "sent_date", "billing_date"}
+    numeric_columns = {"pending_amount", "allocated_qty", "billed_qty", "balance_to_bill", "appointment_covered_qty", "appointment_required_qty"}
+    date_columns = {"allocation_date", "appointment_date", "sent_date", "billing_date"}
     yes_no_columns = {"sent_for_billing", "billing_done"}
 
     replaced_rows = 0
@@ -3188,7 +3552,7 @@ def run_allocation(pending_df, stock_df):
                 "Status": "No Stock"
             })
 
-    return pd.DataFrame(result)
+    return apply_appointments_to_allocation(pd.DataFrame(result))
 
 
 # =====================================================
@@ -3205,6 +3569,11 @@ def save_allocation(df):
     has_balance_to_bill = "balance_to_bill" in tracker_columns
     has_billing_source = "billing_source" in tracker_columns
     has_allocation_type = "allocation_type" in tracker_columns
+    has_appointment_no = "appointment_no" in tracker_columns
+    has_appointment_date = "appointment_date" in tracker_columns
+    has_appointment_status = "appointment_status" in tracker_columns
+    has_appointment_covered_qty = "appointment_covered_qty" in tracker_columns
+    has_appointment_required_qty = "appointment_required_qty" in tracker_columns
 
     for _, r in df.iterrows():
         if clean_number(r["Allocated Qty."]) <= 0:
@@ -3292,6 +3661,31 @@ def save_allocation(df):
             insert_columns.insert(-1, "allocation_type")
             value_keys.insert(-1, ":allocation_type")
             params["allocation_type"] = r.get("Allocation Type", "Physical Stock") or "Physical Stock"
+
+        if has_appointment_no:
+            insert_columns.insert(-1, "appointment_no")
+            value_keys.insert(-1, ":appointment_no")
+            params["appointment_no"] = r.get("Appointment No.", "")
+
+        if has_appointment_date:
+            insert_columns.insert(-1, "appointment_date")
+            value_keys.insert(-1, ":appointment_date")
+            params["appointment_date"] = r.get("Appointment Date", "")
+
+        if has_appointment_status:
+            insert_columns.insert(-1, "appointment_status")
+            value_keys.insert(-1, ":appointment_status")
+            params["appointment_status"] = r.get("Appointment Status", "")
+
+        if has_appointment_covered_qty:
+            insert_columns.insert(-1, "appointment_covered_qty")
+            value_keys.insert(-1, ":appointment_covered_qty")
+            params["appointment_covered_qty"] = clean_number(r.get("Appointment Covered Qty", 0))
+
+        if has_appointment_required_qty:
+            insert_columns.insert(-1, "appointment_required_qty")
+            value_keys.insert(-1, ":appointment_required_qty")
+            params["appointment_required_qty"] = clean_number(r.get("Appointment Required Qty", 0))
 
         db_execute(f"""
         INSERT INTO allocation_tracker (
@@ -3531,6 +3925,85 @@ elif menu == "Upload & Allocate":
             "to FGI/ECOM plus the approved SITE list."
         )
 
+    st.markdown("---")
+    st.subheader("Flipkart Appointment Upload")
+    st.caption(
+        "Upload appointments already taken by Ops. This does not create stock allocation; "
+        "it marks allocated quantities as appointment covered or appointment required."
+    )
+
+    appointment_sample = pd.DataFrame({
+        "Appointment No.": ["APT123"],
+        "Appointment Date": ["2026-06-10"],
+        "PO No.": ["PO123"],
+        "FSN": ["FSN001"],
+        "FK Warehouse": ["FK1"],
+        "Appointment Qty.": [50],
+        "Remark": ["Existing Flipkart delivery appointment"],
+    })
+
+    with st.expander("Appointment upload format"):
+        st.dataframe(appointment_sample, use_container_width=True)
+        st.download_button(
+            "Download Appointment Upload Template",
+            data=to_excel(appointment_sample),
+            file_name="appointment_upload_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    appointment_file = st.file_uploader(
+        "Upload Appointment File",
+        type=["xlsx"],
+        key="appointment_file"
+    )
+
+    if appointment_file is not None:
+        appointment_uploaded_df, appointment_read_error = read_uploaded_excel(
+            appointment_file,
+            "Appointment file"
+        )
+
+        if appointment_read_error:
+            st.error(appointment_read_error)
+
+        else:
+            appointment_df, missing_appointment_cols = prepare_appointment_upload(
+                appointment_uploaded_df
+            )
+
+            if missing_appointment_cols:
+                st.error(f"Missing columns in Appointment file: {missing_appointment_cols}")
+
+            elif appointment_df.empty:
+                st.warning("No valid appointment rows found.")
+
+            else:
+                st.dataframe(appointment_df, use_container_width=True)
+
+                if st.button("Save Appointment Upload"):
+                    saved_appointments = save_appointment_upload(appointment_df)
+                    log_activity("appointment_upload", f"{saved_appointments} appointment rows saved")
+                    st.success(f"{saved_appointments} appointment rows saved successfully")
+                    st.rerun()
+
+    active_appointments = get_appointment_balance_df()
+
+    if not active_appointments.empty:
+        with st.expander("Active appointment balance"):
+            display_cols = [
+                "appointment_no",
+                "appointment_date",
+                "po_no",
+                "fsn",
+                "fk_warehouse",
+                "appointment_qty",
+                "appointment_balance_qty",
+                "remark",
+            ]
+            display_cols = [col for col in display_cols if col in active_appointments.columns]
+            st.dataframe(active_appointments[display_cols], use_container_width=True)
+
+    st.markdown("---")
     st.subheader("Upload Files")
 
     c1, c2 = st.columns(2)
@@ -4031,6 +4504,11 @@ elif menu == "Allocation Tracker":
                 "sap_code",
                 "fcn",
                 "allocation_type",
+                "appointment_no",
+                "appointment_date",
+                "appointment_status",
+                "appointment_covered_qty",
+                "appointment_required_qty",
                 "pending_amount",
                 "allocated_qty",
                 "billed_qty",
@@ -4179,6 +4657,11 @@ elif menu == "Allocation Tracker":
                     "sap_code": st.column_config.TextColumn("SAP Code", disabled=True),
                     "fcn": st.column_config.TextColumn("FCN", disabled=True),
                     "allocation_type": st.column_config.TextColumn("Allocation Type", disabled=True),
+                    "appointment_no": st.column_config.TextColumn("Appointment No.", disabled=True),
+                    "appointment_date": st.column_config.TextColumn("Appointment Date", disabled=True),
+                    "appointment_status": st.column_config.TextColumn("Appointment Status", disabled=True),
+                    "appointment_covered_qty": st.column_config.NumberColumn("Appointment Covered Qty", disabled=True),
+                    "appointment_required_qty": st.column_config.NumberColumn("Appointment Required Qty", disabled=True),
                     "pending_amount": st.column_config.NumberColumn("Pending Amount", disabled=True),
                     "allocated_qty": st.column_config.NumberColumn("Allocated Qty.", disabled=True),
                     "billed_qty": st.column_config.NumberColumn("Billed Qty."),
