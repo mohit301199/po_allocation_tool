@@ -255,8 +255,9 @@ def get_engine():
         st.secrets["DATABASE_URL"],
         pool_pre_ping=True,
         pool_recycle=1800,
-        pool_size=5,
-        max_overflow=5,
+        pool_size=3,
+        max_overflow=2,
+        connect_args={"sslmode": "require"},
     )
 
 
