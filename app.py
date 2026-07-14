@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 import bcrypt
 import hashlib
 import secrets as token_secrets
@@ -264,6 +265,23 @@ def get_engine():
 engine = get_engine()
 
 
+def show_database_connection_error(error):
+    error_text = str(error)
+    short_reason = error_text.split("(Background on this error")[0].strip()
+
+    st.error("Database connection failed. The app cannot reach Supabase/Postgres.")
+    st.info(
+        "Open Streamlit Cloud secrets and replace DATABASE_URL with the exact "
+        "connection string copied from Supabase Dashboard > Project Settings > Database > Connection string. "
+        "If you see 'tenant/user not found', the username/project reference in DATABASE_URL is wrong."
+    )
+
+    with st.expander("Technical database error"):
+        st.code(short_reason)
+
+    st.stop()
+
+
 def make_params_key(params):
     if not params:
         return tuple()
@@ -282,16 +300,22 @@ def db_read_cached(query, params_key):
 def db_read(query, params=None, use_cache=True):
     params_key = make_params_key(params)
 
-    if use_cache:
-        return db_read_cached(query, params_key).copy()
+    try:
+        if use_cache:
+            return db_read_cached(query, params_key).copy()
 
-    with engine.connect() as connection:
-        return pd.read_sql(text(query), connection, params=params or {})
+        with engine.connect() as connection:
+            return pd.read_sql(text(query), connection, params=params or {})
+    except OperationalError as e:
+        show_database_connection_error(e)
 
 
 def db_execute(query, params=None, clear_cache=True):
-    with engine.begin() as connection:
-        connection.execute(text(query), params or {})
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(query), params or {})
+    except OperationalError as e:
+        show_database_connection_error(e)
 
     if clear_cache:
         st.cache_data.clear()
@@ -301,8 +325,11 @@ def db_execute_many(query, params_list, clear_cache=True):
     if not params_list:
         return
 
-    with engine.begin() as connection:
-        connection.execute(text(query), params_list)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(query), params_list)
+    except OperationalError as e:
+        show_database_connection_error(e)
 
     if clear_cache:
         st.cache_data.clear()
